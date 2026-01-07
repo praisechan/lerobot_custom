@@ -26,6 +26,12 @@ import torch.nn.functional as F  # noqa: N812
 from torch import Tensor, nn
 from typing_extensions import Unpack
 
+try:
+    import torch.cuda.nvtx as nvtx
+    NVTX_AVAILABLE = True
+except ImportError:
+    NVTX_AVAILABLE = False
+
 from lerobot.utils.import_utils import _transformers_available
 
 # Conditional import for type checking and lazy loading
@@ -583,6 +589,113 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
         except ImportError:
             raise ValueError(msg) from None
 
+        # Apply NVTX profiling to transformers models if available
+        if NVTX_AVAILABLE:
+            self._apply_nvtx_to_transformers()
+
+    def _apply_nvtx_to_transformers(self):
+        """Monkey patch transformers models to add NVTX profiling markers."""
+        if not NVTX_AVAILABLE:
+            return
+
+        # Patch PaliGemma language model layers with detailed profiling
+        paligemma_model = self.paligemma_with_expert.paligemma.language_model
+        for layer_idx, layer in enumerate(paligemma_model.layers):
+            original_forward = layer.forward
+            
+            def make_layer_forward(idx, orig_forward):
+                def nvtx_wrapped_forward(*args, **kwargs):
+                    nvtx.range_push(f"paligemma_layer_{idx}")
+                    result = orig_forward(*args, **kwargs)
+                    nvtx.range_pop()
+                    return result
+                return nvtx_wrapped_forward
+            
+            layer.forward = make_layer_forward(layer_idx, original_forward)
+            
+            # Also patch self-attention and MLP for more granular profiling
+            if hasattr(layer, 'self_attn'):
+                original_attn_forward = layer.self_attn.forward
+                
+                def make_attn_forward(idx, orig_forward):
+                    def nvtx_attn_forward(*args, **kwargs):
+                        nvtx.range_push(f"paligemma_attn_{idx}")
+                        result = orig_forward(*args, **kwargs)
+                        nvtx.range_pop()
+                        return result
+                    return nvtx_attn_forward
+                
+                layer.self_attn.forward = make_attn_forward(layer_idx, original_attn_forward)
+            
+            if hasattr(layer, 'mlp'):
+                original_mlp_forward = layer.mlp.forward
+                
+                def make_mlp_forward(idx, orig_forward):
+                    def nvtx_mlp_forward(*args, **kwargs):
+                        nvtx.range_push(f"paligemma_mlp_{idx}")
+                        result = orig_forward(*args, **kwargs)
+                        nvtx.range_pop()
+                        return result
+                    return nvtx_mlp_forward
+                
+                layer.mlp.forward = make_mlp_forward(layer_idx, original_mlp_forward)
+
+        # Patch Gemma expert model layers with detailed profiling
+        gemma_model = self.paligemma_with_expert.gemma_expert.model
+        for layer_idx, layer in enumerate(gemma_model.layers):
+            original_forward = layer.forward
+            
+            def make_layer_forward(idx, orig_forward):
+                def nvtx_wrapped_forward(*args, **kwargs):
+                    nvtx.range_push(f"gemma_expert_layer_{idx}")
+                    result = orig_forward(*args, **kwargs)
+                    nvtx.range_pop()
+                    return result
+                return nvtx_wrapped_forward
+            
+            layer.forward = make_layer_forward(layer_idx, original_forward)
+            
+            # Also patch self-attention and MLP for more granular profiling
+            if hasattr(layer, 'self_attn'):
+                original_attn_forward = layer.self_attn.forward
+                
+                def make_attn_forward(idx, orig_forward):
+                    def nvtx_attn_forward(*args, **kwargs):
+                        nvtx.range_push(f"gemma_expert_attn_{idx}")
+                        result = orig_forward(*args, **kwargs)
+                        nvtx.range_pop()
+                        return result
+                    return nvtx_attn_forward
+                
+                layer.self_attn.forward = make_attn_forward(layer_idx, original_attn_forward)
+            
+            if hasattr(layer, 'mlp'):
+                original_mlp_forward = layer.mlp.forward
+                
+                def make_mlp_forward(idx, orig_forward):
+                    def nvtx_mlp_forward(*args, **kwargs):
+                        nvtx.range_push(f"gemma_expert_mlp_{idx}")
+                        result = orig_forward(*args, **kwargs)
+                        nvtx.range_pop()
+                        return result
+                    return nvtx_mlp_forward
+                
+                layer.mlp.forward = make_mlp_forward(layer_idx, original_mlp_forward)
+
+        # Patch vision tower if needed
+        vision_model = self.paligemma_with_expert.paligemma.vision_tower.vision_model
+        original_vision_forward = vision_model.forward
+        
+        def nvtx_vision_forward(*args, **kwargs):
+            nvtx.range_push("vision_encoder")
+            result = original_vision_forward(*args, **kwargs)
+            nvtx.range_pop()
+            return result
+        
+        vision_model.forward = nvtx_vision_forward
+
+        logging.info("Applied NVTX profiling markers to PaliGemma and Gemma models")
+
     def gradient_checkpointing_enable(self):
         """Enable gradient checkpointing for memory optimization."""
         self.gradient_checkpointing_enabled = True
@@ -788,6 +901,9 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
         **kwargs: Unpack[ActionSelectKwargs],
     ) -> Tensor:
         """Do a full inference forward and compute the action."""
+        if NVTX_AVAILABLE:
+            nvtx.range_push("sample_actions")
+        
         if num_steps is None:
             num_steps = self.config.num_inference_steps
 
@@ -803,13 +919,19 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
             )  # Use config max_action_dim for internal processing
             noise = self.sample_noise(actions_shape, device)
 
+        if NVTX_AVAILABLE:
+            nvtx.range_push("embed_prefix")
         prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(images, img_masks, tokens, masks)
+        if NVTX_AVAILABLE:
+            nvtx.range_pop()
         prefix_att_2d_masks = make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
         prefix_position_ids = torch.cumsum(prefix_pad_masks, dim=1) - 1
 
         prefix_att_2d_masks_4d = self._prepare_attention_masks_4d(prefix_att_2d_masks)
         self.paligemma_with_expert.paligemma.language_model.config._attn_implementation = "eager"  # noqa: SLF001
 
+        if NVTX_AVAILABLE:
+            nvtx.range_push("prefix_forward")
         _, past_key_values = self.paligemma_with_expert.forward(
             attention_mask=prefix_att_2d_masks_4d,
             position_ids=prefix_position_ids,
@@ -817,11 +939,18 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
             inputs_embeds=[prefix_embs, None],
             use_cache=True,
         )
+        if NVTX_AVAILABLE:
+            nvtx.range_pop()
 
         dt = -1.0 / num_steps
 
         x_t = noise
+        if NVTX_AVAILABLE:
+            nvtx.range_push("denoising_loop")
         for step in range(num_steps):
+            if NVTX_AVAILABLE:
+                nvtx.range_push(f"denoise_step_{step}")
+            
             time = 1.0 + step * dt
             time_tensor = torch.tensor(time, dtype=torch.float32, device=device).expand(bsize)
 
@@ -853,6 +982,13 @@ class PI05Pytorch(nn.Module):  # see openpi `PI0Pytorch`
 
             if self.rtc_processor is not None and self.rtc_processor.is_debug_enabled():
                 self.rtc_processor.track(time=time, x_t=x_t, v_t=v_t)
+            
+            if NVTX_AVAILABLE:
+                nvtx.range_pop()  # denoise_step_{step}
+        
+        if NVTX_AVAILABLE:
+            nvtx.range_pop()  # denoising_loop
+            nvtx.range_pop()  # sample_actions
 
         return x_t
 
@@ -1219,19 +1355,34 @@ class PI05Policy(PreTrainedPolicy):
     @torch.no_grad()
     def predict_action_chunk(self, batch: dict[str, Tensor], **kwargs: Unpack[ActionSelectKwargs]) -> Tensor:
         """Predict a chunk of actions given environment observations."""
+        if NVTX_AVAILABLE:
+            nvtx.range_push("predict_action_chunk")
+        
         self.eval()
 
         # Prepare inputs
+        if NVTX_AVAILABLE:
+            nvtx.range_push("preprocess_images")
         images, img_masks = self._preprocess_images(batch)
+        if NVTX_AVAILABLE:
+            nvtx.range_pop()
+        
         tokens, masks = batch[f"{OBS_LANGUAGE_TOKENS}"], batch[f"{OBS_LANGUAGE_ATTENTION_MASK}"]
 
         # Sample actions using the model (pass through RTC kwargs, no separate state needed for PI05)
+        if NVTX_AVAILABLE:
+            nvtx.range_push("model_sample_actions")
         actions = self.model.sample_actions(images, img_masks, tokens, masks, **kwargs)
+        if NVTX_AVAILABLE:
+            nvtx.range_pop()
 
         # Unpad actions to actual action dimension
         original_action_dim = self.config.output_features[ACTION].shape[0]
         actions = actions[:, :, :original_action_dim]
 
+        if NVTX_AVAILABLE:
+            nvtx.range_pop()  # predict_action_chunk
+        
         return actions
 
     def forward(self, batch: dict[str, Tensor], reduction: str = "mean") -> tuple[Tensor, dict]:
