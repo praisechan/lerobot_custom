@@ -180,3 +180,4 @@ outputs/
 
 # setup
 egl_probe/
+eval_logs/
