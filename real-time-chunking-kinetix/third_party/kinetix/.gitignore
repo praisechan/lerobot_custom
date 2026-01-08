@@ -1,7 +1,10 @@
-# Created by https://www.toptal.com/developers/gitignore/api/visualstudiocode,python,vim
-# Edit at https://www.toptal.com/developers/gitignore?templates=visualstudiocode,python,vim
+tmp/
+wandb/
+runs/
 
-### Python ###
+play_data
+checkpoints
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -46,7 +49,8 @@ htmlcov/
 .nox/
 .coverage
 .coverage.*
-.cache
+.cache*
+.cache_*
 nosetests.xml
 coverage.xml
 *.cover
@@ -132,6 +136,9 @@ ENV/
 env.bak/
 venv.bak/
 
+
+!configs/env
+
 # Spyder project settings
 .spyderproject
 .spyproject
@@ -161,62 +168,27 @@ cython_debug/
 #  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
-#.idea/
+.idea/
+texture_cache.pbz2
+texture_cache*.pbz2
+profile*
+wandb_key
+test.py
+outputs
+lol*
+.cache-location
+experiments/ppo_old.py
+.bash_history
+logs/
+.vscode
 
-### Python Patch ###
-# Poetry local configuration file - https://python-poetry.org/docs/configuration/#local-configuration
-poetry.toml
+kinetix/util/old_learning_with_mask.py
+offline/datasets/*.pkl
+all_sweeps
+worlds/games
 
-# ruff
-.ruff_cache/
-
-# LSP config files
-pyrightconfig.json
-
-### Vim ###
-# Swap
-[._]*.s[a-v][a-z]
-!*.svg  # comment out if you don't need vector files
-[._]*.sw[a-p]
-[._]s[a-rt-v][a-z]
-[._]ss[a-gi-z]
-[._]sw[a-p]
-
-# Session
-Session.vim
-Sessionx.vim
-
-# Temporary
-.netrwhist
-*~
-# Auto-generated tag files
-tags
-# Persistent undo
-[._]*.un~
-
-### VisualStudioCode ###
-.vscode/*
-!.vscode/settings.json
-!.vscode/tasks.json
-!.vscode/launch.json
-!.vscode/extensions.json
-!.vscode/*.code-snippets
-
-# Local History for Visual Studio Code
-.history/
-
-# Built Visual Studio Code Extensions
-*.vsix
-
-### VisualStudioCode Patch ###
-# Ignore all local history of files
-.history
-.ionide
-
-# End of https://www.toptal.com/developers/gitignore/api/visualstudiocode,python,vim
-
-wandb/
-
-
-# dataset
-bc/
+artifacts
+log*_*
+kinetix/analysis/test*.py
+slurm-*.out
+results/

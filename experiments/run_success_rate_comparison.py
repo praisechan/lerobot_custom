@@ -36,7 +36,7 @@ def run_quick_eval(n_action_steps: int, n_episodes: int = 5, task: str = "libero
     try:
         # Run without capturing output so progress bars show in real-time
         # Timeout set to 20 minutes (1200s) for 10 tasks × 5 episodes
-        result = subprocess.run(cmd, timeout=1200)
+        result = subprocess.run(cmd)
         
         if result.returncode == 0:
             print(f"\n✓ Completed n_action_steps={n_action_steps}")
@@ -85,9 +85,9 @@ def main():
     configs = [
         (5, "Very Reactive - 250ms period, 4Hz re-planning"),
         (10, "Default - 500ms period, 2Hz re-planning"),
-        (15, "Balanced - 750ms period, 1.33Hz re-planning"),
-        (20, "Efficient - 1000ms period, 1Hz re-planning"),
-        (40, "Efficient - 1000ms period, 1Hz re-planning"),
+        # (15, "Balanced - 750ms period, 1.33Hz re-planning"),
+        # (20, "Efficient - 1000ms period, 1Hz re-planning"),
+        # (40, "Efficient - 1000ms period, 1Hz re-planning"),
     ]
     tasks = ["libero_spatial", "libero_object", "libero_goal", "libero_10"]  # Tasks to evaluate
 
