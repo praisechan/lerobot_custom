@@ -10,10 +10,11 @@ Usage:
 import torch
 import numpy as np
 import time
+import gc
 from lerobot.policies.pi05.configuration_pi05 import PI05Config
-from lerobot.policies.pi05.modeling_pi05 import PI05Policy, get_gemma_config, GemmaConfig, _LATENCY_PROFILER
+from lerobot.policies.pi05.modeling_pi05 import PI05Policy, get_gemma_config, GemmaConfig
 from lerobot.configs.types import FeatureType, PolicyFeature
-
+import torch.cuda.nvtx as nvtx
 
 # Extend get_gemma_config with test variants
 def get_custom_gemma_config(variant: str) -> GemmaConfig:
@@ -96,6 +97,12 @@ def profile_variant(variant, warmup=3, iterations=10, device="cuda"):
     print(f"\nTesting: {variant}")
     print("-" * 60)
     
+    # Print GPU memory before
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+        mem_before = torch.cuda.memory_allocated() / 1024**3
+        print(f"  GPU memory before: {mem_before:.2f} GB")
+    
     try:
         # Get config
         expert_config = get_custom_gemma_config(variant)
@@ -109,84 +116,119 @@ def profile_variant(variant, warmup=3, iterations=10, device="cuda"):
         # Create batch
         batch = create_batch(device)
         
+        nvtx.range_push(f"warmup")
         # Warmup
         print(f"  Warmup: ", end='', flush=True)
-        _LATENCY_PROFILER.disable()
         for i in range(warmup):
             with torch.no_grad():
                 _ = model.predict_action_chunk(batch)
             print(f"{i+1}/{warmup} ", end='', flush=True)
         print("✓")
+        nvtx.range_pop()
         
         # Measure
         print(f"  Measuring: ", end='', flush=True)
-        _LATENCY_PROFILER.enable(device)
-        _LATENCY_PROFILER.reset()
         
+        nvtx.range_push(f"measure")
         for i in range(iterations):
             with torch.no_grad():
                 _ = model.predict_action_chunk(batch)
             print(f"{i+1}/{iterations} ", end='', flush=True)
         print("✓")
+        nvtx.range_pop()
         
-        stats = _LATENCY_PROFILER.get_stats()
-        _LATENCY_PROFILER.disable()
+        # # Print results
+        # vlm_mean = stats['vlm_prefix']['mean'] if stats['vlm_prefix'] else 0
+        # expert_mean = stats['action_expert']['mean'] if stats['action_expert'] else 0
+        # print(f"  ✓ VLM: {vlm_mean:.2f} ms, Expert: {expert_mean:.2f} ms")
         
-        # Print results
-        vlm_mean = stats['vlm_prefix']['mean'] if stats['vlm_prefix'] else 0
-        expert_mean = stats['action_expert']['mean'] if stats['action_expert'] else 0
-        print(f"  ✓ VLM: {vlm_mean:.2f} ms, Expert: {expert_mean:.2f} ms")
+        # result = {
+        #     "variant": variant,
+        #     "width": expert_config.width,
+        #     "mlp_dim": expert_config.mlp_dim,
+        #     "vlm_ms": vlm_mean,
+        #     "expert_ms": expert_mean,
+        #     "total_ms": vlm_mean + expert_mean,
+        #     "stats": stats,
+        # }
         
-        result = {
-            "variant": variant,
-            "width": expert_config.width,
-            "mlp_dim": expert_config.mlp_dim,
-            "vlm_ms": vlm_mean,
-            "expert_ms": expert_mean,
-            "total_ms": vlm_mean + expert_mean,
-            "stats": stats,
-        }
-        
-        # Cleanup
+        # Cleanup - aggressive memory freeing
+        print(f"  Cleaning up...", end='', flush=True)
+        # Move model to CPU first to release GPU memory
+        model.cpu()
         del model, batch
+        # Force garbage collection
+        gc.collect()
+        # Clear CUDA cache
         torch.cuda.empty_cache()
+        # Synchronize to ensure all operations are complete
+        torch.cuda.synchronize()
         
-        return result
+        # Print GPU memory after cleanup
+        if torch.cuda.is_available():
+            mem_after = torch.cuda.memory_allocated() / 1024**3
+            print(f" ✓ (GPU memory after: {mem_after:.2f} GB)")
+        else:
+            print(" ✓")
+        
+        return
         
     except Exception as e:
         print(f"  ✗ Error: {e}")
         import traceback
         traceback.print_exc()
+        # Cleanup on error
+        if 'model' in locals():
+            model.cpu()
+            del model
+        if 'batch' in locals():
+            del batch
+        gc.collect()
         torch.cuda.empty_cache()
+        torch.cuda.synchronize()
         return None
 
 
 def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    
+    # Enable CUDA optimizations (same as lerobot_eval.py)
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cuda.matmul.allow_tf32 = True
+    
     print("="*70)
     print("PI05 Action Expert Latency Profiling")
     print("="*70)
     print(f"Device: {device}")
     print(f"GPU: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'N/A'}")
+    print(f"cuDNN benchmark: {torch.backends.cudnn.benchmark}")
+    print(f"TF32 enabled: {torch.backends.cuda.matmul.allow_tf32}")
     
     # Test only valid variants
     variants = [
         "gemma_512",
-        "gemma_768",
+        # "gemma_768",
         "gemma_300m",  # baseline
-        "gemma_1536",
+        # "gemma_1536",
         "gemma_2048",
     ]
+    # variants = [
+    #     "gemma_512",
+    #     "gemma_768",
+    #     "gemma_300m",  # baseline
+    #     "gemma_1536",
+    #     "gemma_2048",
+    # ]
     
     print(f"\nTesting {len(variants)} variants with 3 warmup + 10 measurement iterations each")
     print("="*70)
     
     results = []
     for i, variant in enumerate(variants, 1):
+        nvtx.range_push(f"Profile_{variant}")
         print(f"\n[{i}/{len(variants)}] Progress: {'█' * i}{'░' * (len(variants)-i)} {i*100//len(variants)}%")
-        result = profile_variant(variant, warmup=3, iterations=10, device=device)
-        if result:
-            results.append(result)
+        profile_variant(variant, warmup=3, iterations=10, device=device)
+        nvtx.range_pop()
     
     # Print summary
     print("\n" + "="*70)
@@ -209,16 +251,7 @@ def main():
             if r['variant'] != 'gemma_300m':
                 speedup = baseline['expert_ms'] / r['expert_ms']
                 print(f"  {r['variant']:<15} Expert: {speedup:>5.2f}x ({r['expert_ms']:>6.2f}ms)")
-    
-    # Export CSV
-    import csv
-    with open("action_expert_latency.csv", 'w', newline='') as f:
-        writer = csv.writer(f)
-        writer.writerow(["Variant", "Width", "MLP_Dim", "VLM_ms", "Expert_ms", "Total_ms"])
-        for r in results:
-            writer.writerow([r['variant'], r['width'], r['mlp_dim'], 
-                           f"{r['vlm_ms']:.2f}", f"{r['expert_ms']:.2f}", f"{r['total_ms']:.2f}"])
-    
+        
     print("\n" + "="*70)
     print("✓ Results saved to action_expert_latency.csv")
     print("="*70)
