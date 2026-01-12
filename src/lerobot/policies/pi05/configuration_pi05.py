@@ -108,7 +108,7 @@ class PI05Config(PreTrainedConfig):
         if self.paligemma_variant not in ["gemma_300m", "gemma_2b"]:
             raise ValueError(f"Invalid paligemma_variant: {self.paligemma_variant}")
 
-        if self.action_expert_variant not in ["gemma_300m", "gemma_2b"]:
+        if self.action_expert_variant not in ["gemma_512", "gemma_300m", "gemma_2048", "gemma_768", "gemma_1536", "gemma_2b"]:
             raise ValueError(f"Invalid action_expert_variant: {self.action_expert_variant}")
 
         if self.dtype not in ["bfloat16", "float32"]:
