@@ -1,0 +1,5 @@
+*.lock linguist-generated=true
+*.log linguist-generated=true
+*.ipynb linguist-generated=true
+ATTRIBUTIONS.md linguist-generated=true
+configs/ linguist-generated=true
