@@ -13,6 +13,13 @@ from openpi_client import base_policy as _base_policy
 import torch
 from typing_extensions import override
 
+# NVTX profiling support - torch.cuda.nvtx works for both JAX and PyTorch!
+try:
+    import torch.cuda.nvtx as nvtx
+    NVTX_AVAILABLE = True
+except (ImportError, AttributeError):
+    NVTX_AVAILABLE = False
+
 from openpi import transforms as _transforms
 from openpi.models import model as _model
 from openpi.shared import array_typing as at
@@ -62,42 +69,73 @@ class Policy(BasePolicy):
         else:
             # JAX model setup
             self._sample_actions = nnx_utils.module_jit(model.sample_actions)
-            self._rng = rng or jax.random.key(0)
+            self._rng = rng if rng is not None else jax.random.key(0)
 
     @override
     def infer(self, obs: dict, *, noise: np.ndarray | None = None) -> dict:  # type: ignore[misc]
-        # Make a copy since transformations may modify the inputs in place.
-        inputs = jax.tree.map(lambda x: x, obs)
-        inputs = self._input_transform(inputs)
-        if not self._is_pytorch_model:
-            # Make a batch and convert to jax.Array.
-            inputs = jax.tree.map(lambda x: jnp.asarray(x)[np.newaxis, ...], inputs)
-            self._rng, sample_rng_or_pytorch_device = jax.random.split(self._rng)
-        else:
-            # Convert inputs to PyTorch tensors and move to correct device
-            inputs = jax.tree.map(lambda x: torch.from_numpy(np.array(x)).to(self._pytorch_device)[None, ...], inputs)
-            sample_rng_or_pytorch_device = self._pytorch_device
+        # NVTX profiling works for both JAX and PyTorch
+        if NVTX_AVAILABLE:
+            nvtx.range_push("Policy.infer")
+        
+        try:
+            # Input preprocessing
+            if NVTX_AVAILABLE:
+                nvtx.range_push("input_preprocessing")
+            
+            inputs = jax.tree.map(lambda x: x, obs)
+            inputs = self._input_transform(inputs)
+            if not self._is_pytorch_model:
+                # Make a batch and convert to jax.Array.
+                inputs = jax.tree.map(lambda x: jnp.asarray(x)[np.newaxis, ...], inputs)
+                self._rng, sample_rng_or_pytorch_device = jax.random.split(self._rng)
+            else:
+                # Convert inputs to PyTorch tensors and move to correct device
+                inputs = jax.tree.map(lambda x: torch.from_numpy(np.array(x)).to(self._pytorch_device)[None, ...], inputs)
+                sample_rng_or_pytorch_device = self._pytorch_device
 
-        # Prepare kwargs for sample_actions
-        sample_kwargs = dict(self._sample_kwargs)
-        if noise is not None:
-            noise = torch.from_numpy(noise).to(self._pytorch_device) if self._is_pytorch_model else jnp.asarray(noise)
+            # Prepare kwargs for sample_actions
+            sample_kwargs = dict(self._sample_kwargs)
+            if noise is not None:
+                noise = torch.from_numpy(noise).to(self._pytorch_device) if self._is_pytorch_model else jnp.asarray(noise)
 
-            if noise.ndim == 2:  # If noise is (action_horizon, action_dim), add batch dimension
-                noise = noise[None, ...]  # Make it (1, action_horizon, action_dim)
-            sample_kwargs["noise"] = noise
+                if noise.ndim == 2:  # If noise is (action_horizon, action_dim), add batch dimension
+                    noise = noise[None, ...]  # Make it (1, action_horizon, action_dim)
+                sample_kwargs["noise"] = noise
 
-        observation = _model.Observation.from_dict(inputs)
-        start_time = time.monotonic()
-        outputs = {
-            "state": inputs["state"],
-            "actions": self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs),
-        }
-        model_time = time.monotonic() - start_time
-        if self._is_pytorch_model:
-            outputs = jax.tree.map(lambda x: np.asarray(x[0, ...].detach().cpu()), outputs)
-        else:
-            outputs = jax.tree.map(lambda x: np.asarray(x[0, ...]), outputs)
+            if NVTX_AVAILABLE:
+                nvtx.range_pop()  # input_preprocessing
+
+            observation = _model.Observation.from_dict(inputs)
+            start_time = time.monotonic()
+            
+            # Model inference
+            if NVTX_AVAILABLE:
+                nvtx.range_push("model_inference")
+            
+            outputs = {
+                "state": inputs["state"],
+                "actions": self._sample_actions(sample_rng_or_pytorch_device, observation, **sample_kwargs),
+            }
+            
+            if NVTX_AVAILABLE:
+                nvtx.range_pop()  # model_inference
+            
+            model_time = time.monotonic() - start_time
+            
+            # Output postprocessing
+            if NVTX_AVAILABLE:
+                nvtx.range_push("output_postprocessing")
+            
+            if self._is_pytorch_model:
+                outputs = jax.tree.map(lambda x: np.asarray(x[0, ...].detach().cpu()), outputs)
+            else:
+                outputs = jax.tree.map(lambda x: np.asarray(x[0, ...]), outputs)
+            
+            if NVTX_AVAILABLE:
+                nvtx.range_pop()  # output_postprocessing
+        finally:
+            if NVTX_AVAILABLE:
+                nvtx.range_pop()  # Policy.infer
 
         outputs = self._output_transform(outputs)
         outputs["policy_timing"] = {

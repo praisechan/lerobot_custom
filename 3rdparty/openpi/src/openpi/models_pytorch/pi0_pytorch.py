@@ -6,6 +6,12 @@ from torch import Tensor
 from torch import nn
 import torch.nn.functional as F  # noqa: N812
 
+try:
+    import torch.cuda.nvtx as nvtx
+    NVTX_AVAILABLE = True
+except (ImportError, AttributeError):
+    NVTX_AVAILABLE = False
+
 import openpi.models.gemma as _gemma
 from openpi.models_pytorch.gemma_pytorch import PaliGemmaWithExpertModel
 import openpi.models_pytorch.preprocessing_pytorch as _preprocessing
@@ -375,48 +381,82 @@ class PI0Pytorch(nn.Module):
     @torch.no_grad()
     def sample_actions(self, device, observation, noise=None, num_steps=10) -> Tensor:
         """Do a full inference forward and compute the action (batch_size x num_steps x num_motors)"""
-        bsize = observation.state.shape[0]
-        if noise is None:
-            actions_shape = (bsize, self.config.action_horizon, self.config.action_dim)
-            noise = self.sample_noise(actions_shape, device)
+        if NVTX_AVAILABLE:
+            nvtx.range_push("sample_actions")
+        
+        try:
+            bsize = observation.state.shape[0]
+            if noise is None:
+                actions_shape = (bsize, self.config.action_horizon, self.config.action_dim)
+                noise = self.sample_noise(actions_shape, device)
 
-        images, img_masks, lang_tokens, lang_masks, state = self._preprocess_observation(observation, train=False)
+            if NVTX_AVAILABLE:
+                nvtx.range_push("preprocess_observation")
+            images, img_masks, lang_tokens, lang_masks, state = self._preprocess_observation(observation, train=False)
+            if NVTX_AVAILABLE:
+                nvtx.range_pop()  # preprocess_observation
 
-        prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(images, img_masks, lang_tokens, lang_masks)
-        prefix_att_2d_masks = make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
-        prefix_position_ids = torch.cumsum(prefix_pad_masks, dim=1) - 1
+            if NVTX_AVAILABLE:
+                nvtx.range_push("embed_prefix")
+            prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(images, img_masks, lang_tokens, lang_masks)
+            prefix_att_2d_masks = make_att_2d_masks(prefix_pad_masks, prefix_att_masks)
+            prefix_position_ids = torch.cumsum(prefix_pad_masks, dim=1) - 1
+            if NVTX_AVAILABLE:
+                nvtx.range_pop()  # embed_prefix
 
-        # Compute image and language key value cache
-        prefix_att_2d_masks_4d = self._prepare_attention_masks_4d(prefix_att_2d_masks)
-        self.paligemma_with_expert.paligemma.language_model.config._attn_implementation = "eager"  # noqa: SLF001
+            # Compute image and language key value cache
+            if NVTX_AVAILABLE:
+                nvtx.range_push("compute_kv_cache")
+            prefix_att_2d_masks_4d = self._prepare_attention_masks_4d(prefix_att_2d_masks)
+            self.paligemma_with_expert.paligemma.language_model.config._attn_implementation = "eager"  # noqa: SLF001
 
-        _, past_key_values = self.paligemma_with_expert.forward(
-            attention_mask=prefix_att_2d_masks_4d,
-            position_ids=prefix_position_ids,
-            past_key_values=None,
-            inputs_embeds=[prefix_embs, None],
-            use_cache=True,
-        )
-
-        dt = -1.0 / num_steps
-        dt = torch.tensor(dt, dtype=torch.float32, device=device)
-
-        x_t = noise
-        time = torch.tensor(1.0, dtype=torch.float32, device=device)
-        while time >= -dt / 2:
-            expanded_time = time.expand(bsize)
-            v_t = self.denoise_step(
-                state,
-                prefix_pad_masks,
-                past_key_values,
-                x_t,
-                expanded_time,
+            _, past_key_values = self.paligemma_with_expert.forward(
+                attention_mask=prefix_att_2d_masks_4d,
+                position_ids=prefix_position_ids,
+                past_key_values=None,
+                inputs_embeds=[prefix_embs, None],
+                use_cache=True,
             )
+            if NVTX_AVAILABLE:
+                nvtx.range_pop()  # compute_kv_cache
 
-            # Euler step - use new tensor assignment instead of in-place operation
-            x_t = x_t + dt * v_t
-            time += dt
-        return x_t
+            dt = -1.0 / num_steps
+            dt = torch.tensor(dt, dtype=torch.float32, device=device)
+
+            x_t = noise
+            time = torch.tensor(1.0, dtype=torch.float32, device=device)
+            
+            if NVTX_AVAILABLE:
+                nvtx.range_push("diffusion_loop")
+            step_count = 0
+            while time >= -dt / 2:
+                if NVTX_AVAILABLE:
+                    nvtx.range_push(f"denoise_step_{step_count}")
+                
+                expanded_time = time.expand(bsize)
+                v_t = self.denoise_step(
+                    state,
+                    prefix_pad_masks,
+                    past_key_values,
+                    x_t,
+                    expanded_time,
+                )
+
+                # Euler step - use new tensor assignment instead of in-place operation
+                x_t = x_t + dt * v_t
+                time += dt
+                
+                if NVTX_AVAILABLE:
+                    nvtx.range_pop()  # denoise_step_N
+                step_count += 1
+            
+            if NVTX_AVAILABLE:
+                nvtx.range_pop()  # diffusion_loop
+            
+            return x_t
+        finally:
+            if NVTX_AVAILABLE:
+                nvtx.range_pop()  # sample_actions
 
     def denoise_step(
         self,
@@ -427,8 +467,14 @@ class PI0Pytorch(nn.Module):
         timestep,
     ):
         """Apply one denoising step of the noise `x_t` at a given timestep."""
+        if NVTX_AVAILABLE:
+            nvtx.range_push("embed_suffix")
         suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(state, x_t, timestep)
+        if NVTX_AVAILABLE:
+            nvtx.range_pop()  # embed_suffix
 
+        if NVTX_AVAILABLE:
+            nvtx.range_push("prepare_masks")
         suffix_len = suffix_pad_masks.shape[1]
         batch_size = prefix_pad_masks.shape[0]
         prefix_len = prefix_pad_masks.shape[1]
@@ -445,7 +491,11 @@ class PI0Pytorch(nn.Module):
         # Prepare attention masks
         full_att_2d_masks_4d = self._prepare_attention_masks_4d(full_att_2d_masks)
         self.paligemma_with_expert.gemma_expert.model.config._attn_implementation = "eager"  # noqa: SLF001
+        if NVTX_AVAILABLE:
+            nvtx.range_pop()  # prepare_masks
 
+        if NVTX_AVAILABLE:
+            nvtx.range_push("expert_forward")
         outputs_embeds, _ = self.paligemma_with_expert.forward(
             attention_mask=full_att_2d_masks_4d,
             position_ids=position_ids,
@@ -454,8 +504,16 @@ class PI0Pytorch(nn.Module):
             use_cache=False,
             adarms_cond=[None, adarms_cond],
         )
+        if NVTX_AVAILABLE:
+            nvtx.range_pop()  # expert_forward
 
+        if NVTX_AVAILABLE:
+            nvtx.range_push("output_projection")
         suffix_out = outputs_embeds[1]
         suffix_out = suffix_out[:, -self.config.action_horizon :]
         suffix_out = suffix_out.to(dtype=torch.float32)
-        return self.action_out_proj(suffix_out)
+        result = self.action_out_proj(suffix_out)
+        if NVTX_AVAILABLE:
+            nvtx.range_pop()  # output_projection
+        
+        return result

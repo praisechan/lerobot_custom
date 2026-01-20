@@ -2,6 +2,7 @@ import dataclasses
 import enum
 import logging
 import socket
+import sys
 
 import tyro
 
@@ -50,6 +51,9 @@ class Args:
     port: int = 8000
     # Record the policy's behavior for debugging.
     record: bool = False
+    
+    # Maximum number of inferences before server terminates (None = run forever, useful for profiling)
+    max_inferences: int | None = None
 
     # Specifies how to load the policy. If not provided, the default policy for the environment will be used.
     policy: Checkpoint | Default = dataclasses.field(default_factory=Default)
@@ -114,6 +118,26 @@ def main(args: Args) -> None:
         port=args.port,
         metadata=policy_metadata,
     )
+    
+    if args.max_inferences is not None:
+        max_inferences = args.max_inferences  # Capture the value to avoid closure issues
+        logging.info(f"Server will terminate after {max_inferences} inferences")
+        # Wrap the policy to count inferences and exit gracefully
+        original_infer = policy.infer
+        inference_count = [0]  # Use list to allow modification in closure
+        
+        def counted_infer(*args, **kwargs):
+            result = original_infer(*args, **kwargs)
+            inference_count[0] += 1
+            logging.info(f"Inference {inference_count[0]}/{max_inferences} completed")
+            if inference_count[0] >= max_inferences:
+                logging.info(f"Reached {max_inferences} inferences, initiating graceful shutdown...")
+                # Clean exit to allow nsys to finalize properly
+                sys.exit(0)
+            return result
+        
+        policy.infer = counted_infer
+    
     server.serve_forever()
 
 

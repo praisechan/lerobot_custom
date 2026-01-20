@@ -220,3 +220,6 @@ wandb/
 
 # dataset
 bc/
+
+# eval outputs
+eval_outputs/

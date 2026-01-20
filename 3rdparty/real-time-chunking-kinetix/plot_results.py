@@ -76,6 +76,62 @@ print(f"Saved: {output_dir / 'heatmaps_delay_horizon.png'}")
 plt.close()
 
 # ============================================================================
+# Figure 2.5: Line Graphs for Naive vs RTC (in milliseconds)
+# ============================================================================
+# Convert timesteps to milliseconds (1 timestep = 33ms)
+TIMESTEP_MS = 33
+
+# Filter for only naive and realtime methods
+rtc_comparison_df = df[df['method'].isin(['naive', 'realtime'])].copy()
+
+fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+
+# Graph 1: Success Rate vs Inference Delay (ms) - Fixed execute_horizon = 4
+ax1 = axes[0]
+FIXED_EXECUTE_HORIZON = 4
+delay_comparison = rtc_comparison_df[rtc_comparison_df['execute_horizon'] == FIXED_EXECUTE_HORIZON].copy()
+delay_comparison = delay_comparison.groupby(['method', 'delay'])['returned_episode_solved'].mean().reset_index()
+delay_comparison['delay_ms'] = delay_comparison['delay'] * TIMESTEP_MS
+
+for method in ['naive', 'realtime']:
+    method_data = delay_comparison[delay_comparison['method'] == method]
+    ax1.plot(method_data['delay_ms'], method_data['returned_episode_solved'], 
+            marker='o', linewidth=2.5, markersize=10, label=method.upper())
+
+ax1.set_xlabel('Inference Delay (ms)', fontsize=13, fontweight='bold')
+ax1.set_ylabel('Average Success Rate', fontsize=13, fontweight='bold')
+ax1.set_title(f'Success Rate vs Inference Delay\n(Execute Horizon fixed at {FIXED_EXECUTE_HORIZON} = {FIXED_EXECUTE_HORIZON * TIMESTEP_MS}ms)', 
+             fontsize=13, fontweight='bold')
+ax1.legend(fontsize=12, loc='best')
+ax1.grid(True, alpha=0.4, linestyle='--')
+ax1.set_ylim([0.4, 1.0])
+
+# Graph 2: Success Rate vs Execute Horizon (ms) - Fixed delay = 1
+ax2 = axes[1]
+FIXED_DELAY = 1
+horizon_comparison = rtc_comparison_df[rtc_comparison_df['delay'] == FIXED_DELAY].copy()
+horizon_comparison = horizon_comparison.groupby(['method', 'execute_horizon'])['returned_episode_solved'].mean().reset_index()
+horizon_comparison['execute_horizon_ms'] = horizon_comparison['execute_horizon'] * TIMESTEP_MS
+
+for method in ['naive', 'realtime']:
+    method_data = horizon_comparison[horizon_comparison['method'] == method]
+    ax2.plot(method_data['execute_horizon_ms'], method_data['returned_episode_solved'], 
+            marker='s', linewidth=2.5, markersize=10, label=method.upper())
+
+ax2.set_xlabel('Execute Horizon (ms)', fontsize=13, fontweight='bold')
+ax2.set_ylabel('Average Success Rate', fontsize=13, fontweight='bold')
+ax2.set_title(f'Success Rate vs Execute Horizon\n(Inference Delay fixed at {FIXED_DELAY} = {FIXED_DELAY * TIMESTEP_MS}ms)', 
+             fontsize=13, fontweight='bold')
+ax2.legend(fontsize=12, loc='best')
+ax2.grid(True, alpha=0.4, linestyle='--')
+ax2.set_ylim([0.7, 1.0])
+
+plt.tight_layout()
+plt.savefig(output_dir / 'naive_vs_rtc_comparison.png', dpi=300, bbox_inches='tight')
+print(f"Saved: {output_dir / 'naive_vs_rtc_comparison.png'}")
+plt.close()
+
+# ============================================================================
 # Figure 3: Per-Level Comparison (Bar plot)
 # ============================================================================
 # Average across delays and horizons for each method and level

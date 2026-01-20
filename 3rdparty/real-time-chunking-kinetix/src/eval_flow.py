@@ -6,6 +6,8 @@ import pathlib
 import pickle
 from typing import Sequence
 
+import imageio
+
 import flax.nnx as nnx
 import jax
 from jax.experimental import shard_map
@@ -187,6 +189,7 @@ def main(
     ),
     seed: int = 0,
     output_dir: str | None = "eval_output",
+    inference_delays: Sequence[int] = (0, 1, 2, 3, 4),
 ):
     static_env_params = kenv_state.StaticEnvParams(**train_expert.LARGE_ENV_PARAMS, frame_skip=train_expert.FRAME_SKIP)
     env_params = kenv_state.EnvParams()
@@ -242,64 +245,89 @@ def main(
             weak_policy = nnx.merge(graphdef, state)
         else:
             weak_policy = None
-        eval_info, _ = eval(config, env, rng, level, policy, env_params, static_env_params, weak_policy)
-        return eval_info
+        eval_info, video = eval(config, env, rng, level, policy, env_params, static_env_params, weak_policy)
+        return eval_info, video
 
     rngs = jax.random.split(jax.random.key(seed), len(level_paths))
     results = collections.defaultdict(list)
-    for inference_delay in [0, 1, 2, 3, 4]:
+    video_dir = pathlib.Path(output_dir) / "videos"
+    video_dir.mkdir(parents=True, exist_ok=True)
+    
+    for inference_delay in inference_delays:
         for execute_horizon in range(max(1, inference_delay), 8 - inference_delay + 1):
             print(f"{inference_delay=} {execute_horizon=}")
             c = dataclasses.replace(
                 config, inference_delay=inference_delay, execute_horizon=execute_horizon, method=NaiveMethodConfig()
             )
-            out = jax.device_get(_eval(c, rngs, levels, state_dicts, weak_state_dicts))
+            eval_info, videos = jax.device_get(_eval(c, rngs, levels, state_dicts, weak_state_dicts))
             for i in range(len(level_paths)):
-                for k, v in out.items():
+                for k, v in eval_info.items():
                     results[k].append(v[i])
                 results["delay"].append(inference_delay)
                 results["method"].append("naive")
                 results["level"].append(level_paths[i])
                 results["execute_horizon"].append(execute_horizon)
+                
+                # Save video only for delay=1, horizon=4
+                if inference_delay == 1 and execute_horizon == 4:
+                    level_name = level_paths[i].replace("/", "_").replace(".json", "")
+                    video_path = video_dir / f"naive_{level_name}.mp4"
+                    imageio.mimsave(video_path, videos[i], fps=30)
 
             c = dataclasses.replace(
                 config, inference_delay=inference_delay, execute_horizon=execute_horizon, method=RealtimeMethodConfig()
             )
-            out = jax.device_get(_eval(c, rngs, levels, state_dicts, weak_state_dicts))
+            eval_info, videos = jax.device_get(_eval(c, rngs, levels, state_dicts, weak_state_dicts))
             for i in range(len(level_paths)):
-                for k, v in out.items():
+                for k, v in eval_info.items():
                     results[k].append(v[i])
                 results["delay"].append(inference_delay)
                 results["method"].append("realtime")
                 results["level"].append(level_paths[i])
                 results["execute_horizon"].append(execute_horizon)
+                
+                # Save video only for delay=1, horizon=4
+                if inference_delay == 1 and execute_horizon == 4:
+                    level_name = level_paths[i].replace("/", "_").replace(".json", "")
+                    video_path = video_dir / f"realtime_{level_name}.mp4"
+                    imageio.mimsave(video_path, videos[i], fps=30)
 
             c = dataclasses.replace(
                 config, inference_delay=inference_delay, execute_horizon=execute_horizon, method=BIDMethodConfig()
             )
-            out = jax.device_get(_eval(c, rngs, levels, state_dicts, weak_state_dicts))
-            for i in range(len(level_paths)):
-                for k, v in out.items():
-                    results[k].append(v[i])
-                results["delay"].append(inference_delay)
-                results["method"].append("bid")
-                results["level"].append(level_paths[i])
-                results["execute_horizon"].append(execute_horizon)
+            eval_info, videos = jax.device_get(_eval(c, rngs, levels, state_dicts, weak_state_dicts))
+            # for i in range(len(level_paths)):
+            #     for k, v in eval_info.items():
+            #         results[k].append(v[i])
+            #     results["delay"].append(inference_delay)
+            #     results["method"].append("bid")
+            #     results["level"].append(level_paths[i])
+            #     results["execute_horizon"].append(execute_horizon)
+                
+            #     # Save video
+            #     level_name = level_paths[i].replace("/", "_").replace(".json", "")
+            #     video_path = video_dir / f"bid_d{inference_delay}_h{execute_horizon}_{level_name}.mp4"
+            #     imageio.mimsave(video_path, videos[i], fps=30)
 
-            c = dataclasses.replace(
-                config,
-                inference_delay=inference_delay,
-                execute_horizon=execute_horizon,
-                method=RealtimeMethodConfig(prefix_attention_schedule="zeros"),
-            )
-            out = jax.device_get(_eval(c, rngs, levels, state_dicts, weak_state_dicts))
-            for i in range(len(level_paths)):
-                for k, v in out.items():
-                    results[k].append(v[i])
-                results["delay"].append(inference_delay)
-                results["method"].append("hard_masking")
-                results["level"].append(level_paths[i])
-                results["execute_horizon"].append(execute_horizon)
+            # c = dataclasses.replace(
+            #     config,
+            #     inference_delay=inference_delay,
+            #     execute_horizon=execute_horizon,
+            #     method=RealtimeMethodConfig(prefix_attention_schedule="zeros"),
+            # )
+            # eval_info, videos = jax.device_get(_eval(c, rngs, levels, state_dicts, weak_state_dicts))
+            # for i in range(len(level_paths)):
+            #     for k, v in eval_info.items():
+            #         results[k].append(v[i])
+            #     results["delay"].append(inference_delay)
+            #     results["method"].append("hard_masking")
+            #     results["level"].append(level_paths[i])
+            #     results["execute_horizon"].append(execute_horizon)
+                
+            #     # Save video
+            #     level_name = level_paths[i].replace("/", "_").replace(".json", "")
+            #     video_path = video_dir / f"hard_masking_d{inference_delay}_h{execute_horizon}_{level_name}.mp4"
+            #     imageio.mimsave(video_path, videos[i], fps=30)
     pathlib.Path(output_dir).mkdir(parents=True, exist_ok=True)
     df = pd.DataFrame(results)
     df.to_csv(pathlib.Path(output_dir) / "results.csv", index=False)
