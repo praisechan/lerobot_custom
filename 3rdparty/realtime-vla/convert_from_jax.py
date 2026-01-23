@@ -205,16 +205,26 @@ def load_jax_weights(jax_path: str):
     
     with ocp.PyTreeCheckpointer() as ckptr:
         metadata = ckptr.metadata(params_path)
+        # orbax may return a StepMetadata wrapper; the actual tree metadata
+        # lives in `item_metadata` in that case. Handle both shapes so we can
+        # build restore_args with a proper pytree metadata object.
+        tree_metadata = getattr(metadata, 'item_metadata', metadata)
+        # orbax may return a StepMetadata wrapper; when that's the case the
+        # actual pytree metadata is reachable as `item_metadata.tree` —
+        # pass that inner tree as the `item` to PyTreeRestore so restore()
+        # returns the parameter pytree (not metadata).
+        restore_item = getattr(tree_metadata, 'tree', tree_metadata)
+
         params = ckptr.restore(
             params_path,
             ocp.args.PyTreeRestore(
-                item=metadata,
+                item=restore_item,
                 restore_args=jax.tree.map(
                     lambda _: ocp.ArrayRestoreArgs(
                         restore_type=jax.Array,
                         sharding=single_device_sharding,
                     ),
-                    metadata,
+                    restore_item,
                 ),
                 transforms={},
             ),
@@ -236,6 +246,23 @@ def load_jax_weights(jax_path: str):
         else:
             return {"value": node}
 
+    # convert any jax.Array leaves to NumPy (move from device to host)
+    def _jax_to_numpy(node):
+        try:
+            import jax as _jax
+        except Exception:
+            _jax = None
+        if isinstance(node, dict):
+            return {k: _jax_to_numpy(v) for k, v in node.items()}
+        # jax.Array -> host-backed ndarray
+        if _jax is not None and isinstance(node, _jax.Array):
+            try:
+                return _jax.device_get(node)
+            except Exception:
+                return node
+        return node
+
+    params = _jax_to_numpy(params)
     return _ensure_value_dict(params)
 
 def prepare_prompt(prompt: str, embedding_weight, tokenizer_path):
@@ -273,7 +300,8 @@ if __name__ == "__main__":
     
     num_views = 2
     dump_weights = load_jax_weights(args.jax_path)
-    embedding_weight = dump_weights['PaliGemma']['llm']['embedder']['input_embedding']['value']
+    # Ensure embedding_weight is a NumPy array (it may be a jax.Array)
+    embedding_weight = np.asarray(dump_weights['PaliGemma']['llm']['embedder']['input_embedding']['value'])
     language_embeds, prompt_len = prepare_prompt(args.prompt, embedding_weight, args.tokenizer_path)
 
     weights = {

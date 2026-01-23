@@ -1231,9 +1231,29 @@ def transformer_decoder(weights, buffers, encoder_seq_len):
 
 def pi0_model(weights, buffers, num_views):
     encoder_seq_len = buffers['encoder_x'].shape[0]
+    torch.cuda.nvtx.range_push("Vision Encoder")
     vision_encoder(weights, buffers, num_views)
+    torch.cuda.nvtx.range_pop()
+    torch.cuda.nvtx.range_push("Transformer Encoder")
     transformer_encoder(weights, buffers, encoder_seq_len)
+    torch.cuda.nvtx.range_pop()
+    torch.cuda.nvtx.range_push("Transformer Decoder")
     transformer_decoder(weights, buffers, encoder_seq_len)
+    torch.cuda.nvtx.range_pop()
+
+def encoder_model(weights, buffers, num_views):
+    encoder_seq_len = buffers['encoder_x'].shape[0]
+    torch.cuda.nvtx.range_push("Vision Encoder")
+    vision_encoder(weights, buffers, num_views)
+    torch.cuda.nvtx.range_pop()
+    torch.cuda.nvtx.range_push("Transformer Encoder")
+    transformer_encoder(weights, buffers, encoder_seq_len)
+    torch.cuda.nvtx.range_pop()
+
+def decoder_model(weights, buffers, encoder_seq_len):
+    torch.cuda.nvtx.range_push("Transformer Decoder")
+    transformer_decoder(weights, buffers, encoder_seq_len)
+    torch.cuda.nvtx.range_pop()
 
 class Pi0Inference:
     def __init__(self, checkpoint, num_views, chunk_size):
@@ -1289,6 +1309,9 @@ class Pi0Inference:
         encoder_seq_len = num_views * 256 + self.prompt_len
         decoder_seq_len = chunk_size + 1
 
+        self.encoder_seq_len = encoder_seq_len
+        self.decoder_seq_len = decoder_seq_len
+
         self.buffers = {
             'observation_images_normalized':      torch.empty(num_views, 224, 224,3,           dtype=torch.bfloat16,   device = "cuda"),
             'observation_state_normalized':       torch.empty(32,                              dtype = torch.bfloat16, device = "cuda"),
@@ -1338,13 +1361,12 @@ class Pi0Inference:
             self.weights[k].copy_(v)
 
         self.infer_graph = torch.cuda.CUDAGraph()
-        self.record_infer_graph()
+        self.record_single_graph()
+        self.encoder_graph = torch.cuda.CUDAGraph()
+        self.decoder_graph = torch.cuda.CUDAGraph()
+        self.record_separate_graphs()
     
-    def record_run(self):
-        self.buffers['encoder_x'][self.num_views * 256:].copy_(self.weights['language_embeds'])
-        pi0_model(self.weights, self.buffers, self.num_views)
-    
-    def record_infer_graph(self):
+    def record_single_graph(self):
         for i in range(3):
             self.record_run()
         stream = torch.cuda.Stream()
@@ -1352,10 +1374,38 @@ class Pi0Inference:
             self.infer_graph.capture_begin()
             self.record_run()
             self.infer_graph.capture_end()
+    
+    def record_run(self):
+        self.buffers['encoder_x'][self.num_views * 256:].copy_(self.weights['language_embeds'])
+        pi0_model(self.weights, self.buffers, self.num_views)
+    
+    def record_separate_graphs(self):
+        for i in range(3):
+            self.record_run()
+        stream = torch.cuda.Stream()
+        with torch.cuda.stream(stream):
+            self.encoder_graph.capture_begin()
+            encoder_model(self.weights, self.buffers, self.num_views)
+            self.encoder_graph.capture_end()
+            self.decoder_graph.capture_begin()
+            decoder_model(self.weights, self.buffers, self.encoder_seq_len)
+            self.decoder_graph.capture_end()
 
-    def forward(self, observation_images_normalized, observation_state_normalized, diffusion_noise):
+    def forward(self, observation_images_normalized, observation_state_normalized, diffusion_noise, concurrent=False):
         self.buffers['observation_images_normalized'].copy_(observation_images_normalized)
         self.buffers['observation_state_normalized'].copy_(observation_state_normalized)
         self.buffers['diffusion_noise'].copy_(diffusion_noise)
-        self.infer_graph.replay()
+        if concurrent:
+            stream_encoder = torch.cuda.Stream()
+            stream_decoder = torch.cuda.Stream()
+            start_event = torch.cuda.Event()
+            start_event.record()
+            with torch.cuda.stream(stream_encoder):
+                stream_encoder.wait_event(start_event)
+                self.encoder_graph.replay()
+            with torch.cuda.stream(stream_decoder):
+                stream_decoder.wait_event(start_event)
+                self.decoder_graph.replay()
+        else:
+            self.infer_graph.replay()
         return self.buffers['diffusion_noise']
