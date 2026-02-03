@@ -3,6 +3,7 @@
 Quick profiling script for π0 model with JAX profiler.
 Shows fine-grained profiling inside JIT-compiled code.
 """
+from click import prompt
 import jax
 import jax.numpy as jnp
 import jax.profiler
@@ -14,33 +15,31 @@ os.environ['XLA_FLAGS'] = '--xla_gpu_enable_command_buffer='  # Better profiling
 print("Loading π0 model...")
 from openpi.policies.policy_config import create_trained_policy
 from openpi.training.config import get_config
+from openpi.models.tokenizer import PaligemmaTokenizer
 import numpy as np
+import dataclasses
+import torch
 
 # Load policy using the correct API (same as serve_policy.py)
-config = get_config("pi05_libero")  # Just the config name, not a file path
+config_name = "pi05_libero"  # Just the config name, not a file path
 checkpoint_dir = "gs://openpi-assets/checkpoints/pi05_libero"
-policy = create_trained_policy(config, checkpoint_dir)
-print(f"Model loaded: {type(policy._model).__name__}")
+policies = {}
+
+# Initialize tokenizer for token counting
 
 # Create dummy observation for profiling (must be dict format, not Observation object)
 print("\nCreating dummy observation...")
 # Policy.infer expects a dict with these keys (see examples/libero/main.py)
-observation = {
+base_observation = {
     "observation/image": np.zeros((224, 224, 3), dtype=np.uint8),
     "observation/wrist_image": np.zeros((224, 224, 3), dtype=np.uint8),
     "observation/state": np.zeros(7, dtype=np.float32),
-    "prompt": "pick up the object",
+    "prompt": "",  # Will be set per prompt
 }
 
-# Warmup to compile everything
-print("Warming up (compiling JIT functions)...")
-for i in range(3):
-    print(f"  Warmup {i+1}/3")
-    result = policy.infer(observation)
-    # result is a dict with "actions" key
-    if isinstance(result["actions"], jnp.ndarray):
-        result["actions"].block_until_ready()
-    print(f"    Action shape: {result['actions'].shape}")
+# Define prompts of varying lengths to vary input token count
+base_prompt = "pick up the red object from the table and place it in the basket carefully. "
+prompts = [base_prompt * 1]  # Single prompt for testing
 
 print("\n" + "="*60)
 print("Starting profiling...")
@@ -49,49 +48,58 @@ print("="*60)
 # Profile with JAX profiler (saves trace files locally)
 profile_dir = "/tmp/pi0-libero-profile"
 print(f"\nProfile will be saved to: {profile_dir}")
+# jax.profiler.start_trace(profile_dir)  # Commented out for faster testing
 
-num_inferences = 5
-print(f"\nRunning {num_inferences} inference steps...")
+num_inferences = 3  # Reduced for faster testing
+print(f"\nRunning {num_inferences} inference steps per prompt...")
 
-# Don't use create_perfetto_link=True on remote machines - it requires local HTTP access
-with jax.profiler.trace(profile_dir, create_perfetto_link=True):
+max_len_lists = [128, 512, 1024, 2048, 4096]
+for max_len in max_len_lists:
+    tokenizer = PaligemmaTokenizer(max_len=max_len)
+    print("Tokenizer loaded.")
+    # Build a prompt that will result in exactly max_len text tokens
+    # Start with a base prompt and repeat until we reach or exceed max_len tokens, then truncate
+    repeated_prompt = base_prompt
+    tokens, mask = tokenizer.tokenize(repeated_prompt)
+    while np.sum(mask) < max_len:
+        repeated_prompt += base_prompt
+        tokens, mask = tokenizer.tokenize(repeated_prompt)
+    # Now truncate the prompt so that the number of tokens is exactly max_len
+    # Find the minimal substring that gives exactly max_len tokens
+    left, right = 0, len(repeated_prompt)
+    best_prompt = repeated_prompt
+    while left < right:
+        mid = (left + right) // 2
+        test_prompt = repeated_prompt[:mid]
+        tokens, mask = tokenizer.tokenize(test_prompt)
+        if np.sum(mask) < max_len:
+            left = mid + 1
+        else:
+            best_prompt = test_prompt
+            right = mid
+    # Final prompt with exactly max_len tokens
+    tokens, mask = tokenizer.tokenize(best_prompt)
+    num_text_tokens = np.sum(mask)
+    assert num_text_tokens == max_len, f"Prompt tokenization failed to reach max_len={max_len}, got {num_text_tokens}"
+    observation = base_observation.copy()
+    observation["prompt"] = best_prompt
+    if max_len not in policies:
+        config = get_config(config_name)
+        config = dataclasses.replace(config, model=dataclasses.replace(config.model, max_token_len=max_len))
+        print(f"Creating policy with max_token_len={max_len}")
+        policies[max_len] = create_trained_policy(config, checkpoint_dir)
+    policy = policies[max_len]
+    # Assuming 3 images, each with 256 tokens (224/14)^2 for patch size 14
+    num_image_tokens = 3 * 256
+    total_input_tokens = num_image_tokens + num_text_tokens
+    print(f"\n--- Profiling with prompt: '{best_prompt[:50]}...' (length: {len(best_prompt)} chars, text tokens: {num_text_tokens}, total input tokens: {total_input_tokens}, max_len: {max_len}) ---")
+    torch.cuda.nvtx.range_push(f"inference_token_length_{num_text_tokens}")
     for i in range(num_inferences):
         print(f"  Inference {i+1}/{num_inferences}")
         result = policy.infer(observation)
         # Ensure GPU work completes before moving to next iteration
         if isinstance(result["actions"], jnp.ndarray):
             result["actions"].block_until_ready()
+    torch.cuda.nvtx.range_pop()
 
-print("\n" + "="*60)
-print("Profiling complete!")
-print("="*60)
-print(f"\nProfile saved to: {profile_dir}")
-
-print("\n📊 How to view the trace:")
-print("\n1. Using XProf (Recommended for remote machines):")
-print(f"   xprof --port 8791 {profile_dir}")
-print("   Then open http://localhost:8791/ in your browser")
-print("   Select your run from the dropdown, then choose 'trace_viewer' from Tools")
-
-print("\n2. Using Perfetto (requires local file or SSH tunnel):")
-print("   a. Download trace file to your local machine:")
-print(f"      scp -r atlas2:{profile_dir} .")
-print("   b. Go to https://ui.perfetto.dev/")
-print("   c. Click 'Open trace file' and select the .pb.gz or .json.gz file")
-
-print("\n3. For SSH tunnel (if you want automatic Perfetto link):")
-print("   ssh -L 9001:127.0.0.1:9001 atlas2")
-print("   Then re-run this script with create_perfetto_link=True")
-
-print("\n🔍 What to look for in the trace:")
-print("  - sample_actions (outer)")
-print("    ├─ preprocess_observation")
-print("    ├─ embed_prefix")
-print("    ├─ compute_kv_cache")
-print("    └─ diffusion_loop")
-print("        ├─ step_embed_suffix (inside JIT!)")
-print("        ├─ step_compute_masks (inside JIT!)")
-print("        ├─ step_compute_positions (inside JIT!)")
-print("        ├─ step_llm_forward (inside JIT! - expected bottleneck)")
-print("        └─ step_action_proj (inside JIT!)")
-print("\nThe step_* markers show detailed breakdown of each diffusion step!")
+# jax.profiler.stop_trace()  # Commented out

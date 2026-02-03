@@ -102,6 +102,7 @@ def rollout(
     seeds: list[int] | None = None,
     return_observations: bool = False,
     render_callback: Callable[[gym.vector.VectorEnv], None] | None = None,
+    use_predict_action_chunk: bool = False,
 ) -> dict:
     """Run a batched policy rollout once through a batch of environments.
 
@@ -174,7 +175,13 @@ def rollout(
 
         observation = preprocessor(observation)
         with torch.inference_mode():
-            action = policy.select_action(observation)
+            if use_predict_action_chunk:
+                action = policy.predict_action_chunk(observation)
+                # predict_action_chunk returns (batch, chunk_size, action_dim)
+                # Take only the first action for single-step execution
+                action = action[:, 0, :]
+            else:
+                action = policy.select_action(observation)
         action = postprocessor(action)
 
         action_transition = {"action": action}
@@ -259,6 +266,7 @@ def eval_policy(
     videos_dir: Path | None = None,
     return_episode_data: bool = False,
     start_seed: int | None = None,
+    use_predict_action_chunk: bool = False,
 ) -> dict:
     """
     Args:
@@ -346,6 +354,7 @@ def eval_policy(
             seeds=list(seeds) if seeds else None,
             return_observations=return_episode_data,
             render_callback=render_frame if max_episodes_rendered > 0 else None,
+            use_predict_action_chunk=use_predict_action_chunk,
         )
 
         # Figure out where in each rollout sequence the first done condition was encountered (results after
@@ -603,6 +612,7 @@ def eval_one(
     videos_dir: Path | None,
     return_episode_data: bool,
     start_seed: int | None,
+    use_predict_action_chunk: bool = False,
 ) -> TaskMetrics:
     """Evaluates one task_id of one suite using the provided vec env."""
 
@@ -620,6 +630,7 @@ def eval_one(
         videos_dir=task_videos_dir,
         return_episode_data=return_episode_data,
         start_seed=start_seed,
+        use_predict_action_chunk=use_predict_action_chunk,
     )
 
     per_episode = task_result["per_episode"]
@@ -646,6 +657,7 @@ def run_one(
     videos_dir: Path | None,
     return_episode_data: bool,
     start_seed: int | None,
+    use_predict_action_chunk: bool = False,
 ):
     """
     Run eval_one for a single (task_group, task_id, env).
@@ -670,6 +682,7 @@ def run_one(
         videos_dir=task_videos_dir,
         return_episode_data=return_episode_data,
         start_seed=start_seed,
+        use_predict_action_chunk=use_predict_action_chunk,
     )
     # ensure we always provide video_paths key to simplify accumulation
     if max_episodes_rendered > 0:
@@ -691,6 +704,7 @@ def eval_policy_all(
     return_episode_data: bool = False,
     start_seed: int | None = None,
     max_parallel_tasks: int = 1,
+    use_predict_action_chunk: bool = False,
 ) -> dict:
     """
     Evaluate a nested `envs` dict: {task_group: {task_id: vec_env}}.
@@ -746,6 +760,7 @@ def eval_policy_all(
         videos_dir=videos_dir,
         return_episode_data=return_episode_data,
         start_seed=start_seed,
+        use_predict_action_chunk=use_predict_action_chunk,
     )
 
     if max_parallel_tasks <= 1:
