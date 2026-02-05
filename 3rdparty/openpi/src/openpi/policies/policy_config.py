@@ -22,6 +22,7 @@ def create_trained_policy(
     default_prompt: str | None = None,
     norm_stats: dict[str, transforms.NormStats] | None = None,
     pytorch_device: str | None = None,
+    is_GB10_device: bool = False,
 ) -> _policy.Policy:
     """Create a policy from a trained checkpoint.
 
@@ -53,6 +54,18 @@ def create_trained_policy(
     if is_pytorch:
         model = train_config.model.load_pytorch(train_config, weight_path)
         model.paligemma_with_expert.to_bfloat16_for_selected_params("bfloat16")
+    elif is_GB10_device:
+        # For JAX models, use float32 instead of bfloat16 to avoid LLVM conversion issues
+        # on edge hardware (e.g., GB10) where bf16->fp16 conversion with certain rounding
+        # modes is not supported during XLA compilation
+        logging.info("Loading JAX model with float32 dtype to avoid LLVM bf16->fp16 conversion issues")
+        
+        # Create a new config with float32 dtype to avoid bf16 issues
+        import dataclasses
+        model_config_with_float32 = dataclasses.replace(train_config.model, dtype="float32")
+        train_config = dataclasses.replace(train_config, model=model_config_with_float32)
+        
+        model = train_config.model.load(_model.restore_params(checkpoint_dir / "params", dtype=jnp.float32))
     else:
         model = train_config.model.load(_model.restore_params(checkpoint_dir / "params", dtype=jnp.bfloat16))
     data_config = train_config.data.create(train_config.assets_dirs, train_config.model)
