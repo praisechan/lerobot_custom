@@ -1409,3 +1409,76 @@ class Pi0Inference:
         else:
             self.infer_graph.replay()
         return self.buffers['diffusion_noise']
+
+    def forward_mps(self, observation_images_normalized, observation_state_normalized, diffusion_noise, 
+                    mps_encoder_percentage=50, mps_decoder_percentage=50, concurrent=False):
+        """
+        Forward pass using CUDA MPS (Multi-Process Service) for concurrent execution.
+        
+        Args:
+            observation_images_normalized: Input images tensor
+            observation_state_normalized: Input state tensor
+            diffusion_noise: Input noise tensor
+            mps_encoder_percentage: Percentage of SMs allocated to encoder (1-100). Default: 50
+            mps_decoder_percentage: Percentage of SMs allocated to decoder (1-100). Default: 50
+            concurrent: If True, run encoder and decoder concurrently with MPS. If False, run sequentially.
+        
+        Returns:
+            Output diffusion noise tensor
+            
+        Note:
+            When concurrent=True, the sum of mps_encoder_percentage and mps_decoder_percentage should be <= 100.
+            The actual resource allocation depends on NVIDIA GPU MPS scheduling.
+        """
+        import os
+        
+        self.buffers['observation_images_normalized'].copy_(observation_images_normalized)
+        self.buffers['observation_state_normalized'].copy_(observation_state_normalized)
+        self.buffers['diffusion_noise'].copy_(diffusion_noise)
+        
+        if not concurrent:
+            # Sequential execution with MPS: encoder gets the allocated percentage
+            os.environ["CUDA_MPS_ACTIVE_THREAD_PERCENTAGE"] = str(mps_encoder_percentage)
+            torch.cuda.synchronize()
+            encoder_model(self.weights, self.buffers, self.num_views)
+            torch.cuda.synchronize()
+            
+            # Decoder gets the allocated percentage
+            os.environ["CUDA_MPS_ACTIVE_THREAD_PERCENTAGE"] = str(mps_decoder_percentage)
+            torch.cuda.synchronize()
+            decoder_model(self.weights, self.buffers, self.encoder_seq_len)
+            torch.cuda.synchronize()
+            
+            return self.buffers['diffusion_noise']
+        else:
+            # Concurrent execution with MPS
+            # Launch two CUDA streams that will share resources via MPS
+            stream_encoder = torch.cuda.Stream()
+            stream_decoder = torch.cuda.Stream()
+            
+            # Set MPS allocation for encoder stream
+            os.environ["CUDA_MPS_ACTIVE_THREAD_PERCENTAGE"] = str(mps_encoder_percentage)
+            torch.cuda.synchronize()
+            
+            start_event = torch.cuda.Event()
+            start_event.record()
+            
+            # Run encoder on first stream
+            with torch.cuda.stream(stream_encoder):
+                stream_encoder.wait_event(start_event)
+                encoder_model(self.weights, self.buffers, self.num_views)
+            
+            # Set MPS allocation for decoder stream
+            os.environ["CUDA_MPS_ACTIVE_THREAD_PERCENTAGE"] = str(mps_decoder_percentage)
+            torch.cuda.synchronize()
+            
+            # Run decoder on second stream
+            with torch.cuda.stream(stream_decoder):
+                stream_decoder.wait_event(start_event)
+                decoder_model(self.weights, self.buffers, self.encoder_seq_len)
+            
+            # Wait for both streams to complete
+            stream_encoder.synchronize()
+            stream_decoder.synchronize()
+            
+            return self.buffers['diffusion_noise']
