@@ -76,6 +76,7 @@ def put_along_last_axis(arr, indices, values):
 @dataclasses.dataclass(frozen=True)
 class Pi0FASTConfig(_model.BaseModelConfig):
     dtype: str = "bfloat16"
+    rmsnorm_compute_dtype: str | None = "float32"
     paligemma_variant: _gemma.Variant = "gemma_2b"
 
     # Set the model specific defaults.
@@ -141,6 +142,7 @@ class Pi0FAST(_model.BaseModel):
                 **paligemma_config,
                 embed_dtype=config.dtype,
                 cache_dtype=config.dtype,
+                rmsnorm_compute_dtype=config.rmsnorm_compute_dtype,
             )
         )
         llm.lazy_init(rngs=rngs, method="init")

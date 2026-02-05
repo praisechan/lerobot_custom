@@ -86,15 +86,18 @@ class Einsum(nn.Module):
 
 @at.typecheck
 class RMSNorm(nn.Module):
+    compute_dtype: str | None = "float32"
+
     @nn.compact
     def __call__(self, x):
         dtype = x.dtype  # original dtype, could be half-precision
         scale = self.param("scale", nn.initializers.zeros_init(), (x.shape[-1]))
-        var = jnp.mean(jnp.square(x.astype(jnp.float32)), axis=-1, keepdims=True)  # compute variance in float32
-        normed_inputs = jnp.asarray(x * jnp.reciprocal(jnp.sqrt(var + 1e-06)))  # compute normalization in float32
-        normed_inputs = normed_inputs * (
-            1 + scale
-        )  # scale by learned parameter in float32 (matches Flax implementation)
+        compute_dtype = dtype if self.compute_dtype is None else jnp.dtype(self.compute_dtype)
+        x_compute = x if x.dtype == compute_dtype else x.astype(compute_dtype)
+        var = jnp.mean(jnp.square(x_compute), axis=-1, keepdims=True)
+        normed_inputs = x_compute * jnp.reciprocal(jnp.sqrt(var + 1e-06))
+        scale = scale.astype(normed_inputs.dtype)
+        normed_inputs = normed_inputs * (1 + scale)
         return normed_inputs.astype(dtype)  # return in original dtype
 
 
@@ -237,10 +240,11 @@ class Block(nn.Module):
     dropout: float = 0.0
     dropout_bdims: tuple[int, ...] = ()
     cache_dtype: str | None = None
+    rmsnorm_compute_dtype: str | None = "float32"
     lora_configs: ml_collections.ConfigDict = dataclasses.field(default_factory=ml_collections.ConfigDict)
 
     def setup(self):
-        self.pre_attention_norm = RMSNorm()
+        self.pre_attention_norm = RMSNorm(compute_dtype=self.rmsnorm_compute_dtype)
         self.attn = Attention(
             num_heads=self.num_heads,
             num_kv_heads=self.num_kv_heads,
@@ -249,7 +253,7 @@ class Block(nn.Module):
             cache_dtype=self.cache_dtype,
             lora_config=self.lora_configs.get("attn"),
         )
-        self.pre_ffw_norm = RMSNorm()
+        self.pre_ffw_norm = RMSNorm(compute_dtype=self.rmsnorm_compute_dtype)
         self.mlp = lora.FeedForward(
             features=self.embed_dim, hidden_dim=self.hidden_dim, name="mlp", lora_config=self.lora_configs.get("ffn")
         )
@@ -294,6 +298,7 @@ class Module(nn.Module):
     dropout: float = 0.0
     dropout_bdims: tuple[int, ...] = ()  # Every float is dropped independently.
     cache_dtype: str | None = None
+    rmsnorm_compute_dtype: str | None = "float32"
 
     scan: bool = False
     remat_policy: str = "none"
@@ -389,6 +394,7 @@ class Module(nn.Module):
             "dropout": self.dropout,
             "dropout_bdims": self.dropout_bdims,
             "cache_dtype": self.cache_dtype,
+            "rmsnorm_compute_dtype": self.rmsnorm_compute_dtype,
             "lora_configs": self.lora_configs,
         }
         layers = self.scope.push("layers")
@@ -407,7 +413,7 @@ class Module(nn.Module):
         assert x.dtype == jnp.dtype(self.embed_dtype)  # Sanity check.
         out["encoded"] = x
 
-        x = RMSNorm(name="final_norm")(x)
+        x = RMSNorm(name="final_norm", compute_dtype=self.rmsnorm_compute_dtype)(x)
         out["pre_logits"] = x
         if return_prelogits:
             return x, kv_cache, out

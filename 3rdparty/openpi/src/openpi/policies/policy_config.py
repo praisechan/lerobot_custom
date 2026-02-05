@@ -38,6 +38,8 @@ def create_trained_policy(
             from the checkpoint directory.
         pytorch_device: Device to use for PyTorch models (e.g., "cpu", "cuda", "cuda:0").
                       If None and is_pytorch=True, will use "cuda" if available, otherwise "cpu".
+        is_GB10_device: If True, keep bf16 weights and force RMSNorm compute dtype to bf16 to avoid
+            bf16->fp32 upcast issues on GB10 hardware.
 
     Note:
         The function automatically detects whether the model is PyTorch-based by checking for the
@@ -55,17 +57,17 @@ def create_trained_policy(
         model = train_config.model.load_pytorch(train_config, weight_path)
         model.paligemma_with_expert.to_bfloat16_for_selected_params("bfloat16")
     elif is_GB10_device:
-        # For JAX models, use float32 instead of bfloat16 to avoid LLVM conversion issues
-        # on edge hardware (e.g., GB10) where bf16->fp16 conversion with certain rounding
-        # modes is not supported during XLA compilation
-        logging.info("Loading JAX model with float32 dtype to avoid LLVM bf16->fp16 conversion issues")
-        
-        # Create a new config with float32 dtype to avoid bf16 issues
+        # For JAX models on GB10, keep bf16 weights but avoid bf16->fp32 upcasts in RMSNorm
+        # by forcing RMSNorm compute dtype to bf16.
+        logging.info("Loading JAX model with bf16 RMSNorm compute to avoid GB10 bf16->fp32 conversion issues")
+
         import dataclasses
-        model_config_with_float32 = dataclasses.replace(train_config.model, dtype="float32")
-        train_config = dataclasses.replace(train_config, model=model_config_with_float32)
-        
-        model = train_config.model.load(_model.restore_params(checkpoint_dir / "params", dtype=jnp.float32))
+
+        if hasattr(train_config.model, "rmsnorm_compute_dtype"):
+            model_config = dataclasses.replace(train_config.model, rmsnorm_compute_dtype="bfloat16")
+            train_config = dataclasses.replace(train_config, model=model_config)
+
+        model = train_config.model.load(_model.restore_params(checkpoint_dir / "params", dtype=jnp.bfloat16))
     else:
         model = train_config.model.load(_model.restore_params(checkpoint_dir / "params", dtype=jnp.bfloat16))
     data_config = train_config.data.create(train_config.assets_dirs, train_config.model)

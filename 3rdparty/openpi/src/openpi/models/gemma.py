@@ -117,23 +117,28 @@ def get_config(variant: Variant) -> Config:
 
 @at.typecheck
 class RMSNorm(nn.Module):
+    compute_dtype: str | None = "float32"
+
     @nn.compact
     def __call__(self, x, cond):
         dtype = x.dtype  # original dtype, could be half-precision
-        var = jnp.mean(jnp.square(x.astype(jnp.float32)), axis=-1, keepdims=True)  # compute variance in float32
-        normed_inputs = jnp.asarray(x * jnp.reciprocal(jnp.sqrt(var + 1e-06)))  # compute normalization in float32
+        compute_dtype = dtype if self.compute_dtype is None else jnp.dtype(self.compute_dtype)
+        x_compute = x if x.dtype == compute_dtype else x.astype(compute_dtype)
+        var = jnp.mean(jnp.square(x_compute), axis=-1, keepdims=True)
+        normed_inputs = x_compute * jnp.reciprocal(jnp.sqrt(var + 1e-06))
         if cond is None:
             # regular RMSNorm
             scale = self.param("scale", nn.initializers.zeros_init(), (x.shape[-1]))
-            normed_inputs = normed_inputs * (
-                1 + scale
-            )  # scale by learned parameter in float32 (matches Flax implementation)
+            scale = scale.astype(normed_inputs.dtype)
+            normed_inputs = normed_inputs * (1 + scale)
             return normed_inputs.astype(dtype), None  # return in original dtype
 
         # adaptive RMSNorm
         modulation = nn.Dense(x.shape[-1] * 3, kernel_init=nn.initializers.zeros, dtype=dtype)(cond)
         scale, shift, gate = jnp.split(modulation[:, None, :], 3, axis=-1)
-        normed_inputs = normed_inputs * (1 + scale) + shift  # scale and shift in float32
+        scale = scale.astype(normed_inputs.dtype)
+        shift = shift.astype(normed_inputs.dtype)
+        normed_inputs = normed_inputs * (1 + scale) + shift
         return normed_inputs.astype(dtype), gate
 
 
@@ -301,6 +306,7 @@ class Block(nn.Module):
 
     dropout: float = 0.0
     dropout_bdims: tuple[int, ...] = ()
+    rmsnorm_compute_dtype: str | None = "float32"
 
     @nn.compact
     def __call__(self, xs, kv_cache, positions, attn_mask, adarms_cond, deterministic=True):  # noqa: FBT002
@@ -314,7 +320,9 @@ class Block(nn.Module):
             gates = []
             for i, x in enumerate(xs):
                 if x is not None:
-                    x, gate = RMSNorm(name=_name("pre_attention_norm", i))(x, adarms_cond[i])  # noqa: PLW2901
+                    x, gate = RMSNorm(name=_name("pre_attention_norm", i), compute_dtype=self.rmsnorm_compute_dtype)(
+                        x, adarms_cond[i]
+                    )  # noqa: PLW2901
                 pre_attn.append(x)
                 gates.append(gate if x is not None else None)
 
@@ -334,7 +342,9 @@ class Block(nn.Module):
             gates = []
             for i, (x, config) in enumerate(zip(xs, self.configs, strict=True)):
                 if x is not None:
-                    x, gate = RMSNorm(name=_name("pre_ffw_norm", i))(x, adarms_cond[i])  # noqa: PLW2901
+                    x, gate = RMSNorm(name=_name("pre_ffw_norm", i), compute_dtype=self.rmsnorm_compute_dtype)(
+                        x, adarms_cond[i]
+                    )  # noqa: PLW2901
                     x = lora.FeedForward(  # noqa: PLW2901
                         features=config.width,
                         hidden_dim=config.mlp_dim,
@@ -366,6 +376,7 @@ class Module(nn.Module):
     dropout: float = 0.0
     dropout_bdims: tuple[int, ...] = ()  # Every float is dropped independently.
     adarms: bool = False
+    rmsnorm_compute_dtype: str | None = "float32"
 
     def setup(self):
         # all experts must have the same depth
@@ -398,8 +409,12 @@ class Module(nn.Module):
             configs=self.configs,
             dropout=self.dropout,
             dropout_bdims=self.dropout_bdims,
+            rmsnorm_compute_dtype=self.rmsnorm_compute_dtype,
         )
-        self.final_norms = [RMSNorm(name=_name("final_norm", i)) for i in range(len(self.configs))]
+        self.final_norms = [
+            RMSNorm(name=_name("final_norm", i), compute_dtype=self.rmsnorm_compute_dtype)
+            for i in range(len(self.configs))
+        ]
 
     @at.typecheck
     def embed(self, tokens: at.Int[at.Array, "b t"]) -> at.Float[at.Array, "b t d"]:

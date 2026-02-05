@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 @dataclasses.dataclass(frozen=True)
 class Pi0Config(_model.BaseModelConfig):
     dtype: str = "bfloat16"
+    rmsnorm_compute_dtype: str | None = "float32"
     paligemma_variant: _gemma.Variant = "gemma_2b"
     action_expert_variant: _gemma.Variant = "gemma_300m"
 
