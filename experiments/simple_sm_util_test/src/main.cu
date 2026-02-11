@@ -155,8 +155,16 @@ int main(int argc, char** argv) {
 
   bool prefer_green = green_contexts_supported();
   if (!prefer_green) {
-    std::cerr << "Warning: CUDA Green Contexts not available in headers; "
+    std::cerr << "Warning: CUDA Green Contexts API not available (CUDA < 11.4); "
               << "falling back to primary context.\n";
+  } else {
+    // Check if device actually supports Green Contexts
+    if (!device_supports_green_contexts(0, &err)) {
+      std::cerr << "Warning: " << err << "\n"
+                << "Falling back to primary context. "
+                << "SM sweep will vary grid size instead.\n";
+      prefer_green = false;
+    }
   }
 
   std::ofstream csv(opts.csv_path);
@@ -176,7 +184,8 @@ int main(int argc, char** argv) {
       std::cerr << "Context creation failed for sm=" << sm << ": " << ctx_err << "\n";
       return EXIT_FAILURE;
     }
-    if (!ctx_err.empty()) {
+    // Only print warning once, then disable green context preference
+    if (!ctx_err.empty() && prefer_green) {
       std::cerr << "Warning: " << ctx_err << "\n";
       if (!used_green) {
         prefer_green = false;
