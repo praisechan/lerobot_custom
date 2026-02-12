@@ -1,105 +1,245 @@
-# SM-limited Read Bandwidth Sweep
+# SM Bandwidth Sweep with CUDA Green Contexts
 
-This microbenchmark sweeps SM counts and measures DRAM read bandwidth. It attempts to use CUDA Green Contexts (execution affinity) to control SM usage. If Green Contexts are not supported by the hardware/driver, it falls back to the primary context and varies grid size instead.
+A microbenchmark to empirically determine the minimum number of SMs required to saturate GPU DRAM read bandwidth using CUDA Green Contexts.
 
-## What are Green Contexts?
+## Overview
 
-Green Contexts allow partitioning GPU resources (SMs and work queues) to control which parts of the GPU different workloads can use. This is useful for:
-- Ensuring latency-sensitive work always has available SMs
-- Reducing interference between concurrent GPU workloads
-- Testing performance with limited SM counts
+This benchmark measures DRAM read bandwidth while varying the number of Streaming Multiprocessors (SMs) available for kernel execution. By using **CUDA Green Contexts** (introduced in CUDA 13.0), we can partition GPU resources and restrict kernel execution to specific SM subsets.
 
-**Requirements:**
-- CUDA 11.4+ (API availability)
-- Supported GPU architectures: Hopper (H100), Blackwell, and newer
-- Driver support for execution affinity
+### Key Features
 
-See [NVIDIA Green Contexts Documentation](https://docs.nvidia.com/cuda/cuda-programming-guide/04-special-topics/green-contexts.html)
+- **Green Context-based SM partitioning**: Programmatically restrict kernels to N SMs
+- **Read-bandwidth kernel**: Streaming vectorized loads with minimal sink writes
+- **Anti-DCE measures**: Checksum accumulation + tiny sink output per block
+- **Statistical measurement**: Multiple repeats with mean and standard deviation
+- **CSV output**: Results ready for plotting and analysis
 
-## Build
+## Requirements
+
+- **CUDA Toolkit**: 13.0 or later (for Green Contexts support)
+- **Compute Capability**: 6.0+ (Pascal or later)
+  - Hopper (9.0+): Min 8 SMs, alignment 8
+  - Ampere (8.x): Min 4 SMs, alignment 2
+  - Volta/Turing (7.x): Min 2 SMs, alignment 2
+  - Pascal (6.x): Min 2 SMs, alignment 2
+- **Platform**: 64-bit Linux (Green Contexts not supported on 32-bit)
+- **CMake**: 3.18+
+- **Python 3**: For plotting (matplotlib, pandas)
+
+## Build Instructions
 
 ```bash
-cd ~/lerobot_custom/experiments/simple_sm_util_test
-mkdir -p build
-cd build
+cd ~/lerobot_custom/experiments/simple_sm_util_greencontext
+
+# Create build directory
+mkdir build && cd build
+
+# Configure
 cmake ..
+
+# Build
 cmake --build . -j
+
+# Binary location: ./sm_bw_sweep
 ```
 
-## Run
+## Usage
+
+### Basic Usage
 
 ```bash
-./sm_bw_sweep --min_sms 1 --max_sms 120 --step 1 --bytes 1073741824 --repeats 5 --csv ./results.csv
+# Default: sweep all SMs, 1 GiB workload
+./sm_bw_sweep
+
+# Custom SM range
+./sm_bw_sweep --min_sms 8 --max_sms 64
+
+# Custom workload size
+./sm_bw_sweep --bytes 2147483648  # 2 GiB
+
+# More repeats for stability
+./sm_bw_sweep --repeats 10
+
+# Custom output
+./sm_bw_sweep --csv my_results.csv
 ```
 
-## Output
+### Command-Line Options
 
-The CSV contains:
-- `sm_count`: requested SM count
-- `green_used`: 1 if Green Contexts were used, 0 otherwise
-- `time_ms_mean`, `time_ms_std`: kernel timing stats
-- `total_bytes_read`: bytes read per measurement
-- `read_GBps_mean`, `read_GBps_std`: achieved read bandwidth
-- `checksum`: simple 64-bit checksum to prevent dead-code elimination
-- `tpb`, `vec_bytes`, `unroll`, `blocks`, `iters`: launch configuration
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--min_sms <N>` | Minimum SM count | 8 |
+| `--max_sms <N>` | Maximum SM count | Device max |
+| `--bytes <N>` | Total bytes to read per measurement | 1073741824 (1 GiB) |
+| `--tpb <N>` | Threads per block | 256 |
+| `--iters <N>` | Override iterations (auto-calculated by default) | auto |
+| `--repeats <N>` | Number of measurement repeats | 5 |
+| `--csv <path>` | Output CSV path | ./results.csv |
+| `--help` | Print usage | - |
 
-## Design Notes
+### Example Output
 
-- The kernel is a read-only streaming load with vectorized 16B loads and loop unrolling.
-- Loads are accumulated into a 64-bit checksum and only one 64-bit value per thread is written to a small `sink` buffer. This write traffic is negligible compared to read traffic.
-- The default `--bytes` value is 1 GiB to avoid cache residency (L2 is much smaller). Set it higher for larger working sets.
-- `-Xptxas -dlcm=cg` is enabled to discourage L1 caching and reflect DRAM+L2 behavior.
-- Green Contexts currently accept an SM count but do not allow explicit SM ID selection. The subset of SMs is implementation-defined; for analysis, treat it as a fixed subset for each `sm_count`.
+```
+=============================================================
+SM Bandwidth Sweep using CUDA Green Contexts
+=============================================================
+Device: NVIDIA H100
+Compute Capability: 9.0
+Total SMs: 132
+Configuration:
+  SM Range: 8 - 132
+  Bytes per measurement: 1073741824 (1.00 GiB)
+  Threads per block: 256
+  Repeats: 5
+  CSV output: ./results.csv
+=============================================================
 
-## Green Context APIs
+Device SM Resource Info:
+  Total SMs: 132
+  Min SM Partition Size: 8
+  SM Co-scheduled Alignment: 8
 
-This project uses the **CUDA Driver API** (`cuCtxCreate_v3`) for backward compatibility with CUDA 11.4-12.x. 
+Testing 17 SM configurations...
 
-**For new projects, NVIDIA recommends the Runtime API** (CUDA 13.1+), which provides:
-- Higher-level abstractions
-- Better resource management  
-- Support for heterogeneous SM partitioning
-- Easier workqueue configuration
-
-See `green_context_runtime_api_example.cu` for a complete Runtime API example.
-
-### Driver API approach (current implementation):
-```cpp
-CUexecAffinityParam params[1];
-params[0].type = CU_EXEC_AFFINITY_TYPE_SM_COUNT;
-params[0].param.smCount.val = sm_count;
-cuCtxCreate_v3(&ctx, params, 1, 0, dev);
+Testing with 8 SMs... 245.32 ± 2.15 GB/s
+Testing with 16 SMs... 487.61 ± 3.42 GB/s
+Testing with 24 SMs... 723.45 ± 4.21 GB/s
+Testing with 32 SMs... 955.23 ± 5.67 GB/s
+Testing with 40 SMs... 1123.45 ± 6.32 GB/s
+Testing with 48 SMs... 1245.67 ± 7.11 GB/s
+Testing with 56 SMs... 1298.45 ± 6.89 GB/s  <- Saturation point
+Testing with 64 SMs... 1302.34 ± 7.23 GB/s
+...
 ```
 
-### Runtime API approach (recommended for CUDA 13.1+):
-```cpp
-cudaDeviceGetDevResource(device, &resource, cudaDevResourceTypeSm);
-cudaDevSmResourceSplit(&result, nbGroups, &resource, &remainder, flags, &groupParams);
-cudaDevResourceGenerateDesc(&desc, &result, nbResources);
-cudaGreenCtxCreate(&greenCtx, desc, device, 0);
-cudaExecutionCtxStreamCreate(&stream, greenCtx, cudaStreamDefault, 0);
+## Kernel Design
+
+### Read Bandwidth Kernel
+
+The kernel is designed to maximize DRAM read throughput while minimizing write traffic:
+
+```cuda
+__global__ void bandwidth_read_kernel(
+    const Vec4U32* input,    // 16B vectorized loads
+    uint64_t* sink,          // Minimal sink output
+    size_t num_elements,
+    int iters_per_thread
+) {
+    uint64_t checksum = 0;
+    
+    // Streaming reads with vectorized load (16B per iteration)
+    for (int iter = 0; iter < iters_per_thread; ++iter) {
+        Vec4U32 data = input[tid + iter * stride];
+        
+        // Accumulate to prevent DCE
+        checksum ^= data.x + data.y + data.z + data.w;
+    }
+    
+    // One write per block (negligible vs read traffic)
+    if (threadIdx.x == 0) {
+        sink[blockIdx.x] = reduce(checksum);
+    }
+}
 ```
 
-## Hardware Compatibility
+### Anti-DCE Strategy
 
-**Supported GPUs:**
-- NVIDIA H100 (Hopper architecture)
-- NVIDIA Blackwell and newer architectures
+To prevent the compiler from eliminating "useless" reads:
 
-**Not Supported (will fall back to primary context):**
-- RTX A6000, RTX 3090, RTX 4090 (Ampere/Ada Lovelace)
-- A100, A40 (Ampere)
-- V100 (Volta)
-- Older architectures
+1. **Checksum accumulation**: All loaded values contribute to a register checksum using XOR and addition
+2. **Sink write**: Each block writes a single `uint64_t` to global memory
+3. **Sink traffic ratio**: With 1 GiB reads and ~1000 blocks, sink writes are ~8 KB (0.0008% of read traffic)
 
-Check support programmatically:
-```cpp
-int supported = 0;
-cuDeviceGetExecAffinitySupport(&supported, CU_EXEC_AFFINITY_TYPE_SM_COUNT, device);
+### Access Pattern
+
+- **Streaming**: Each thread reads consecutive memory with stride = vector width
+- **Coalesced**: Threads in a warp access consecutive 16B chunks
+- **No reuse**: Working set >> cache capacity, pure DRAM bandwidth test
+
+## CSV Output Format
+
+Generated CSV has the following columns:
+
+```csv
+num_sms,mean_bw_gb_s,stdev_bw_gb_s
+8,245.32,2.15
+16,487.61,3.42
+24,723.45,4.21
+...
 ```
 
-## Plot
+## Plotting Results
 
 ```bash
-python3 tools/plot.py --csv ./results.csv --out ./bw_vs_sm.png
+# Generate bandwidth vs SM count plot
+python3 tools/plot.py results.csv
+
+# Output: results.png
 ```
+
+The plot shows:
+- X-axis: Number of SMs
+- Y-axis: Read bandwidth (GB/s)
+- Error bars: Standard deviation
+- Saturation point: Where bandwidth plateaus
+
+## Understanding Results
+
+### Saturation Point
+
+The **bandwidth saturation point** is the minimum SM count where bandwidth plateaus. Beyond this point, adding more SMs provides diminishing returns.
+
+Example interpretation:
+- If bandwidth plateaus at 56 SMs with 1300 GB/s
+- Memory system can sustain ~1.3 TB/s read bandwidth
+- 56 SMs are sufficient to saturate DRAM
+- Additional SMs would benefit compute-bound workloads but not memory-bound ones
+
+### Expected Behavior
+
+- **Linear growth**: Bandwidth increases proportionally with SM count
+- **Saturation**: Bandwidth plateaus when memory bandwidth is saturated
+- **Variability**: Small standard deviation indicates stable measurements
+
+### Architecture-Specific Notes
+
+**Hopper (H100/H200)**:
+- 80 GB HBM3 models: ~3 TB/s theoretical bandwidth
+- Expect saturation at 40-60 SMs depending on access pattern
+
+**Ampere (A100)**:
+- 40/80 GB HBM2e: ~1.5-2 TB/s theoretical bandwidth
+- Expect saturation at 30-50 SMs
+
+## Caveats & Limitations
+
+### Green Context Limitations
+
+From [green_context_reference.md](docs/green_context_reference.md):
+
+1. **No concurrency guarantee**: Even with disjoint SM partitions, kernels may not run truly concurrently due to other resource contention (HW connections)
+
+2. **SM overflow possible**: In certain scenarios (MPS with `CUDA_MPS_ACTIVE_THREAD_PERCENTAGE`, or CDP on Compute 9.x), workload may use more SMs than provisioned
+
+3. **Thread safety**: Green context can be current to only ONE thread at a time
+
+### Measurement Considerations
+
+1. **System noise**: Other processes may affect measurements; run on idle system
+2. **Thermal throttling**: Extended runs may trigger throttling; monitor GPU temperature
+3. **Cache effects**: Warm-up iterations help stabilize measurements
+4. **PCIe/NVLink**: This benchmark measures on-device DRAM bandwidth only
+
+## References
+
+- [CUDA Green Contexts Documentation](https://docs.nvidia.com/cuda/archive/13.0.0/cuda-driver-api/group__CUDA__GREEN__CONTEXTS.html)
+- [Green Context Reference Guide](docs/green_context_reference.md)
+- [CUDA Driver API](https://docs.nvidia.com/cuda/cuda-driver-api/)
+
+## License
+
+See parent repository license.
+
+## Author
+
+Part of the lerobot_custom experimental suite.

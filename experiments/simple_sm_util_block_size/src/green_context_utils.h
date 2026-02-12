@@ -14,7 +14,6 @@ struct GreenContext {
 bool init_cuda_driver(std::string* err);
 bool get_sm_total(int* sm_total, std::string* err);
 bool green_contexts_supported();
-bool device_supports_green_contexts(int device, std::string* err);
 
 bool create_context_with_sm_count(int sm_count,
                                   bool prefer_green,
