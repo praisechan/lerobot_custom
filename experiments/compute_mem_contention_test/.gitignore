@@ -1,0 +1,28 @@
+# Build artifacts
+build/
+*.o
+*.a
+*.so
+*.dylib
+
+# Executables
+compute_mem_contention_test
+
+# Results
+*.csv
+*.png
+results/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+# Nsight Systems profiles
+*.nsys-rep
+*.qdrep
+
+# Python cache
+__pycache__/
+*.pyc
