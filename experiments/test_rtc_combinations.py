@@ -5,6 +5,7 @@
 Usage example:
 python test_rtc_combinations.py \
     --policy.path=lerobot/pi05_libero_finetuned \
+    --env.type=libero \
     --env.task=libero_spatial \
     --output_dir=./rtc_sweep_results/ \
     --execution_horizons 10,20,40 \
@@ -42,13 +43,15 @@ def parse_rtc_args():
     parser.add_argument(
         "--execution_horizons",
         type=str,
-        default="10,20,40",
+        default="20",
+        # default="10,20,40",
         help="Comma-separated list of execution horizons to test (e.g., '10,20,40')",
     )
     parser.add_argument(
         "--inference_delays",
         type=str,
-        default="0,2,4,6,8",
+        # default="0,2,4,6,8",
+        default="0,2,4,6,8,10,12,14,16,18",
         help="Comma-separated list of inference delays to test (e.g., '0,2,4,6,8')",
     )
     args, remaining = parser.parse_known_args()
@@ -230,6 +233,11 @@ def main(cfg: EvalPipelineConfig, execution_horizons=None, inference_delays=None
             )
 
             # Determine whether to use predict_action_chunk
+            # When True, the evaluation will:
+            # 1. Use predict_action_chunk() which supports RTC
+            # 2. Track previous action chunks across timesteps
+            # 3. Pass inference_delay and execution_horizon from config to the policy
+            # 4. Allow RTC to blend new predictions with previous unexecuted actions
             use_predict_action_chunk = rtc_enabled
 
             # Run evaluation

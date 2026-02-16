@@ -149,6 +149,9 @@ def rollout(
     all_successes = []
     all_dones = []
 
+    # Track previous action chunk for RTC
+    prev_chunk_left_over = None
+
     step = 0
     # Keep track of which environments are done.
     done = np.array([False] * env.num_envs)
@@ -176,12 +179,30 @@ def rollout(
         observation = preprocessor(observation)
         with torch.inference_mode():
             if use_predict_action_chunk:
-                action = policy.predict_action_chunk(observation)
-                # predict_action_chunk returns (batch, chunk_size, action_dim)
+                # Extract RTC parameters from policy config if available
+                rtc_kwargs = {}
+                if hasattr(policy, "config") and hasattr(policy.config, "rtc_config") and policy.config.rtc_config:
+                    if policy.config.rtc_config.enabled:
+                        rtc_kwargs["inference_delay"] = policy.config.rtc_config.inference_delay
+                        rtc_kwargs["execution_horizon"] = policy.config.rtc_config.execution_horizon
+                        rtc_kwargs["prev_chunk_left_over"] = prev_chunk_left_over
+                
+                # Predict full action chunk with RTC parameters
+                action_chunk = policy.predict_action_chunk(observation, **rtc_kwargs)
+                # action_chunk shape: (batch, chunk_size, action_dim)
+                
+                # Update prev_chunk_left_over for next iteration
+                # Store the remaining actions (excluding the first one we're about to execute)
+                if action_chunk.shape[1] > 1:
+                    prev_chunk_left_over = action_chunk[:, 1:, :].clone().detach()
+                else:
+                    prev_chunk_left_over = None
+                
                 # Take only the first action for single-step execution
-                action = action[:, 0, :]
+                action = action_chunk[:, 0, :]
             else:
                 action = policy.select_action(observation)
+                prev_chunk_left_over = None  # Reset when not using predict_action_chunk
         action = postprocessor(action)
 
         action_transition = {"action": action}
