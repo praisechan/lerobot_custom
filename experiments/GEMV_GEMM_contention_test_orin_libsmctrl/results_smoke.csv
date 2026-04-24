@@ -1,0 +1,7 @@
+num_sms,tpc_count,sms_per_tpc,gemv_M,gemv_N,gemm_size,mode,gemv_gflops,gemm_gflops,gemv_time_ms,gemm_time_ms,gemv_slowdown,gemm_slowdown,overlap_pct
+2,1,2,2048,2048,256,isolated_gemv,1.173,0.0,7.149,0.0,1.0,0.0,0.0
+2,1,2,2048,2048,256,isolated_gemm,0.0,165.482,0.0,0.203,0.0,1.0,0.0
+2,1,2,2048,2048,256,concurrent,3.087,11.591,2.718,2.895,0.380,14.277,60.621
+4,2,2,2048,2048,256,isolated_gemv,6.175,0.0,1.358,0.0,1.0,0.0,0.0
+4,2,2,2048,2048,256,isolated_gemm,0.0,311.381,0.0,0.108,0.0,1.0,0.0
+4,2,2,2048,2048,256,concurrent,6.188,23.234,1.356,1.444,0.998,13.402,1.500

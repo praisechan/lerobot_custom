@@ -37,11 +37,11 @@ def plot_bandwidth(csv_path, output_path, title=None, figsize=(10, 6)):
     # Plot bandwidth with shaded error region
     ax.plot(tpc_count, bw_mean, 'o-', linewidth=2, markersize=4, 
             color='#2E86AB', label='Read Bandwidth')
-    ax.fill_between(tpc_count, bw_mean - bw_std, bw_mean + bw_std,
-                     alpha=0.3, color='#2E86AB', label='±1 Std Dev')
+    # ax.fill_between(tpc_count, bw_mean - bw_std, bw_mean + bw_std,
+    #                  alpha=0.3, color='#2E86AB', label='±1 Std Dev')
     
     # Formatting
-    ax.set_xlabel('TPC Count', fontsize=12, fontweight='bold')
+    ax.set_xlabel('SM Count', fontsize=12, fontweight='bold')
     ax.set_ylabel('Read Bandwidth (GB/s)', fontsize=12, fontweight='bold')
     
     if title:
@@ -67,7 +67,7 @@ def plot_bandwidth(csv_path, output_path, title=None, figsize=(10, 6)):
     textstr += f'(≥{saturation_threshold:.1f} GB/s)'
     
     props = dict(boxstyle='round', facecolor='wheat', alpha=0.8)
-    ax.text(0.05, 0.95, textstr, transform=ax.transAxes, fontsize=10,
+    ax.text(0.02, 0.85, textstr, transform=ax.transAxes, fontsize=10,
             verticalalignment='top', bbox=props)
     
     # Tight layout
