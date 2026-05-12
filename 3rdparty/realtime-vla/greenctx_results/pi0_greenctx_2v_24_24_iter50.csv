@@ -1,0 +1,6 @@
+idx,name,mean_ms,median_ms,stdev_ms
+1,sequential full-model baseline (full SM),76.152,75.989,1.788
+2,stream-concurrent baseline (full SM shared),71.618,71.312,1.861
+3,GreenContext encoder-only (VLM partition),41.135,40.714,1.312
+4,GreenContext decoder-only (DiT partition),32.983,32.6,1.267
+5,GreenContext concurrent encoder+decoder (disjoint SM),76.089,75.656,1.926
