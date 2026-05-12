@@ -27,6 +27,68 @@ python pi0_infer_greenctx_experiment.py \
 
 The helper extension is built automatically on first import through `torch.utils.cpp_extension`. Set `PI0_GREENCTX_BUILD_VERBOSE=1` to show the build command.
 
+## Environment Setup Used
+
+Do not run this with the base `python` unless that environment already has CUDA-enabled PyTorch, Triton, and Ninja. The profiling runs above used a local venv in this directory:
+
+```bash
+cd /home/juchan.lee/lerobot_custom/3rdparty/realtime-vla
+
+python -m venv .greenctx_venv
+source .greenctx_venv/bin/activate
+
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install torch==2.11.0 triton==3.6.0 matplotlib ninja
+```
+
+Run the experiment from that venv and point extension builds at the local CUDA 13 install:
+
+```bash
+source .greenctx_venv/bin/activate
+
+CUDA_HOME=/usr/local/cuda-13.0 python pi0_infer_greenctx_experiment.py \
+  --num_views 2 \
+  --encoder-sms 24 \
+  --decoder-sms 24 \
+  --iterations 5 \
+  --warmup 1 \
+  --case green-concurrent
+```
+
+Useful sanity checks:
+
+```bash
+which python
+python - <<'PY'
+import torch, triton
+print("torch", torch.__version__)
+print("torch cuda", torch.version.cuda)
+print("cuda available", torch.cuda.is_available())
+if torch.cuda.is_available():
+    print("device", torch.cuda.get_device_name(0))
+    print("sms", torch.cuda.get_device_properties(0).multi_processor_count)
+print("triton", triton.__version__)
+PY
+```
+
+Expected on the GB10 machine used for these runs:
+
+```text
+.../realtime-vla/.greenctx_venv/bin/python
+torch 2.11.0+cu130
+torch cuda 13.0
+cuda available True
+device NVIDIA GB10
+sms 48
+triton 3.6.0
+```
+
+The first run builds `greenctx_helper.cpp` through `torch.utils.cpp_extension`, so `ninja` is required. To show the build command:
+
+```bash
+PI0_GREENCTX_BUILD_VERBOSE=1 CUDA_HOME=/usr/local/cuda-13.0 python pi0_infer_greenctx_experiment.py ...
+```
+
 ## What It Reports
 
 The script reports:
