@@ -1,0 +1,5 @@
+build/
+*.csv
+*.png
+*.nsys-rep
+*.sqlite
