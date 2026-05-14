@@ -67,8 +67,8 @@ def plot_bandwidth(csv_path, output_path, title=None, figsize=(10, 6)):
     textstr += f'(≥{saturation_threshold:.1f} GB/s)'
     
     props = dict(boxstyle='round', facecolor='wheat', alpha=0.8)
-    ax.text(0.02, 0.85, textstr, transform=ax.transAxes, fontsize=10,
-            verticalalignment='top', bbox=props)
+    # ax.text(0.05, 0.95, textstr, transform=ax.transAxes, fontsize=10,
+    #         verticalalignment='top', bbox=props)
     
     # Tight layout
     plt.tight_layout()
@@ -90,6 +90,87 @@ def plot_bandwidth(csv_path, output_path, title=None, figsize=(10, 6)):
     print(f"  Min: {bw_per_tpc.min():.2f} GB/s/TPC")
     print(f"  Max: {bw_per_tpc.max():.2f} GB/s/TPC (at {tpc_count[bw_per_tpc.argmax()]} TPCs)")
     print(f"  At Peak: {bw_mean.max() / max_bw_tpc:.2f} GB/s/TPC")
+
+
+def plot_bandwidth_by_sm(csv_path, output_path, title=None, figsize=(10, 6), sm_per_tpc=2):
+    """
+    Generate a line plot of read bandwidth vs SM count with error bars.
+    
+    Args:
+        csv_path: Path to CSV file from sm_bw_sweep
+        output_path: Output path for plot image
+        title: Optional custom title
+        figsize: Figure size tuple (width, height)
+        sm_per_tpc: Number of SMs per TPC (default: 2, common for many NVIDIA GPUs)
+    """
+    # Read CSV
+    df = pd.read_csv(csv_path)
+    
+    # Extract columns and convert TPC to SM count
+    tpc_count = df['tpc_count'].values
+    sm_count = tpc_count * sm_per_tpc
+    bw_mean = df['read_GBps_mean'].values
+    bw_std = df['read_GBps_std'].values
+    
+    # Create figure
+    fig, ax = plt.subplots(figsize=figsize)
+    
+    # Plot bandwidth with shaded error region
+    ax.plot(sm_count, bw_mean, 'o-', linewidth=2, markersize=4, 
+            color='#2E86AB', label='Read Bandwidth')
+    # ax.fill_between(sm_count, bw_mean - bw_std, bw_mean + bw_std,
+    #                  alpha=0.3, color='#2E86AB', label='±1 Std Dev')
+    
+    # Formatting
+    ax.set_xlabel('SM Count', fontsize=12, fontweight='bold')
+    ax.set_ylabel('Read Bandwidth (GB/s)', fontsize=12, fontweight='bold')
+    
+    if title:
+        ax.set_title(title, fontsize=14, fontweight='bold')
+    else:
+        ax.set_title('DRAM Read Bandwidth vs. Active SM Count', 
+                     fontsize=14, fontweight='bold')
+    
+    ax.grid(True, alpha=0.3, linestyle='--')
+    ax.legend(loc='best', fontsize=10)
+    
+    # Add text box with max bandwidth
+    max_bw = bw_mean.max()
+    max_bw_sm = sm_count[bw_mean.argmax()]
+    
+    # Find saturation point (where bandwidth reaches 95% of max)
+    saturation_threshold = 0.95 * max_bw
+    saturation_idx = np.where(bw_mean >= saturation_threshold)[0]
+    saturation_sm = sm_count[saturation_idx[0]] if len(saturation_idx) > 0 else max_bw_sm
+    
+    textstr = f'Peak BW: {max_bw:.1f} GB/s\n'
+    textstr += f'Saturation: {saturation_sm} SMs\n'
+    textstr += f'(≥{saturation_threshold:.1f} GB/s)'
+    
+    props = dict(boxstyle='round', facecolor='wheat', alpha=0.8)
+    # ax.text(0.05, 0.95, textstr, transform=ax.transAxes, fontsize=10,
+    #         verticalalignment='top', bbox=props)
+    
+    # Tight layout
+    plt.tight_layout()
+    
+    # Save figure
+    plt.savefig(output_path, dpi=300, bbox_inches='tight')
+    print(f"Plot saved to {output_path}")
+    
+    # Print summary statistics
+    print("\n=== Summary Statistics ===")
+    print(f"SM Range: {sm_count.min()} - {sm_count.max()}")
+    print(f"Bandwidth Range: {bw_mean.min():.2f} - {bw_mean.max():.2f} GB/s")
+    print(f"Peak Bandwidth: {max_bw:.2f} GB/s at {max_bw_sm} SMs")
+    print(f"Saturation Point: ~{saturation_sm} SMs (≥95% of peak)")
+    
+    # Calculate bandwidth efficiency vs SM count
+    bw_per_sm = bw_mean / sm_count
+    print(f"\nBandwidth per SM:")
+    print(f"  Min: {bw_per_sm.min():.2f} GB/s/SM")
+    print(f"  Max: {bw_per_sm.max():.2f} GB/s/SM (at {sm_count[bw_per_sm.argmax()]} SMs)")
+    print(f"  At Peak: {bw_mean.max() / max_bw_sm:.2f} GB/s/SM")
 
 
 def plot_time_comparison(csv_path, output_path):
@@ -174,6 +255,8 @@ def main():
 Examples:
   python3 plot.py --csv results.csv --out bandwidth.png
   python3 plot.py --csv results.csv --out bw.png --title "H100 Read Bandwidth"
+  python3 plot.py --csv results.csv --out bandwidth_sm.png --plot-type bandwidth-sm
+  python3 plot.py --csv results.csv --out bandwidth_sm.png --plot-type bandwidth-sm --sm-per-tpc 1
   python3 plot.py --csv results.csv --out time.png --plot-type time
   python3 plot.py --csv results.csv --out dual.png --plot-type dual
         """
@@ -186,10 +269,12 @@ Examples:
     parser.add_argument('--title', type=str, default=None,
                         help='Custom plot title')
     parser.add_argument('--plot-type', type=str, default='bandwidth',
-                        choices=['bandwidth', 'time', 'dual'],
+                        choices=['bandwidth', 'time', 'dual', 'bandwidth-sm'],
                         help='Type of plot to generate (default: bandwidth)')
     parser.add_argument('--figsize', type=str, default='10,6',
                         help='Figure size as "width,height" (default: 10,6)')
+    parser.add_argument('--sm-per-tpc', type=int, default=2,
+                        help='Number of SMs per TPC for bandwidth-sm plot (default: 2)')
     
     args = parser.parse_args()
     
@@ -210,6 +295,9 @@ Examples:
     # Generate requested plot
     if args.plot_type == 'bandwidth':
         plot_bandwidth(args.csv, args.out, title=args.title, figsize=figsize)
+    elif args.plot_type == 'bandwidth-sm':
+        plot_bandwidth_by_sm(args.csv, args.out, title=args.title, figsize=figsize, 
+                            sm_per_tpc=args.sm_per_tpc)
     elif args.plot_type == 'time':
         plot_time_comparison(args.csv, args.out)
     elif args.plot_type == 'dual':
