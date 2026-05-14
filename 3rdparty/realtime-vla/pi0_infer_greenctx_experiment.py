@@ -73,6 +73,8 @@ def print_greenctx_info(info):
         "sm_coscheduled_alignment",
         "base_sms",
         "split_groups_created",
+        "split_use_flags",
+        "split_ignores_sm_coscheduling",
         "encoder_requested_sms",
         "encoder_actual_sms",
         "encoder_groups",

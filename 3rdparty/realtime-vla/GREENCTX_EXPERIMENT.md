@@ -101,6 +101,15 @@ The script reports:
 
 It also logs GreenContext IDs, stream IDs, requested SM counts, actual SM counts, and the split granularity. The encoder and decoder partitions are disjoint because their descriptors are built from non-overlapping groups returned by one `cuDevSmResourceSplitByCount` call.
 
+For uneven splits such as `--encoder-sms 40 --decoder-sms 8` on a 48-SM GB10, the helper first tries CUDA's default co-scheduling-aware split. CUDA may create fewer symmetric groups than the arithmetic split would suggest; for example, it can return only four 8-SM groups when six are needed. In that case the helper retries with `CU_DEV_SM_RESOURCE_SPLIT_IGNORE_SM_COSCHEDULING`, then combines non-overlapping 8-SM groups into the requested 40-SM and 8-SM GreenContext descriptors. The runtime log exposes this as:
+
+```text
+split_use_flags: 1
+split_ignores_sm_coscheduling: True
+```
+
+This enables finer uneven SM partitions, but it opts out of CUDA's default SM co-scheduling hierarchy guarantees for that split.
+
 ## Profiling
 
 Use Nsight Systems with CUDA and NVTX tracing:
@@ -115,6 +124,30 @@ nsys profile -t cuda,nvtx,osrt \
     --iterations 50 \
     --profile-markers
 ```
+
+For CUDA graph replay on GreenContext streams, prefer node-level CUDA graph tracing:
+
+```bash
+nsys profile -t cuda,nvtx,osrt \
+  --cuda-graph-trace=node \
+  --cuda-memory-usage true \
+  --gpu-metrics-devices=all \
+  -o pi0_greenctx_graph_nodes_2v_24_24 \
+  python pi0_infer_greenctx_experiment.py \
+    --num_views 2 \
+    --encoder-sms 24 \
+    --decoder-sms 24 \
+    --iterations 5 \
+    --warmup 0 \
+    --case green-concurrent
+```
+
+`--cuda-graph-trace=node` does not change the program's CUDA graph execution. The script still replays instantiated graphs through `torch.cuda.CUDAGraph.replay()`, which maps to `cudaGraphLaunch`. This Nsight option only changes profiling granularity:
+
+- `--cuda-graph-trace=graph` records one high-level activity for each CUDA graph launch.
+- `--cuda-graph-trace=node` records graph node/kernel activities inside each launched graph.
+
+On the GB10 GreenContext run, default graph-level tracing can drop the encoder graph activity as an incomplete CUPTI event, leaving only the decoder graph visible in the CUDA HW tab. Node-level tracing keeps CUDA graph execution enabled while making both encoder and decoder replay work visible through graph-node kernel rows. Node tracing records more events, so use it for timeline/debug visibility rather than final latency numbers.
 
 Inspect the `.nsys-rep` with:
 

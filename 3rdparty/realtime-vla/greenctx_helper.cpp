@@ -219,6 +219,9 @@ public:
         d["sm_coscheduled_alignment"] = static_cast<int>(device_resource_.sm.smCoscheduledAlignment);
         d["base_sms"] = base_sms_;
         d["split_groups_created"] = groups_created_;
+        d["split_use_flags"] = split_use_flags_;
+        d["split_ignores_sm_coscheduling"] =
+            static_cast<bool>(split_use_flags_ & CU_DEV_SM_RESOURCE_SPLIT_IGNORE_SM_COSCHEDULING);
         d["primary_ctx_ptr"] = ptr_to_int(primary_ctx_);
         d["primary_ctx_id"] = primary_ctx_id_;
         add_one(d, "encoder", encoder_);
@@ -278,15 +281,34 @@ private:
         std::vector<CUdevResource> partitions(groups_created_);
         CUdevResource remaining;
         unsigned int requested_groups = groups_created_;
+        split_use_flags_ = 0;
         CHECK_CU(cuDevSmResourceSplitByCount(
             partitions.data(), &requested_groups, &device_resource_, &remaining, 0,
             static_cast<unsigned int>(base_sms_)));
+
+        if (requested_groups < groups_created_) {
+            const unsigned int default_groups = requested_groups;
+            requested_groups = groups_created_;
+            split_use_flags_ = CU_DEV_SM_RESOURCE_SPLIT_IGNORE_SM_COSCHEDULING;
+            CHECK_CU(cuDevSmResourceSplitByCount(
+                partitions.data(), &requested_groups, &device_resource_, &remaining, split_use_flags_,
+                static_cast<unsigned int>(base_sms_)));
+            if (verbose_ && requested_groups >= groups_created_) {
+                std::fprintf(
+                    stderr,
+                    "[GreenCtx] default split created only %u groups of %d SMs; using "
+                    "CU_DEV_SM_RESOURCE_SPLIT_IGNORE_SM_COSCHEDULING to create %u groups.\n",
+                    default_groups, base_sms_, requested_groups);
+            }
+        }
+
         groups_created_ = requested_groups;
         if (groups_created_ < encoder_groups + decoder_groups) {
             throw std::runtime_error(
                 "CUDA created only " + std::to_string(groups_created_) + " partitions of " +
                 std::to_string(base_sms_) + " SMs; need " +
-                std::to_string(encoder_groups + decoder_groups));
+                std::to_string(encoder_groups + decoder_groups) +
+                ". Retried with CU_DEV_SM_RESOURCE_SPLIT_IGNORE_SM_COSCHEDULING.");
         }
 
         encoder_.resources.assign(partitions.begin(), partitions.begin() + encoder_groups);
@@ -320,9 +342,9 @@ private:
             return;
         }
         std::fprintf(stderr,
-                     "[GreenCtx] device=%d total_sms=%u min_partition=%u alignment=%u base_sms=%d split_groups=%u\n",
+                     "[GreenCtx] device=%d total_sms=%u min_partition=%u alignment=%u base_sms=%d split_groups=%u split_flags=0x%x\n",
                      device_index_, device_resource_.sm.smCount, device_resource_.sm.minSmPartitionSize,
-                     device_resource_.sm.smCoscheduledAlignment, base_sms_, groups_created_);
+                     device_resource_.sm.smCoscheduledAlignment, base_sms_, groups_created_, split_use_flags_);
         std::fprintf(stderr,
                      "[GreenCtx] encoder: requested_sms=%u actual_sms=%u groups=%u green_id=%llu ctx_id=%llu stream_id=%llu stream_ptr=0x%llx\n",
                      encoder_.requested_sms, encoder_.actual_sms, encoder_.groups, encoder_.green_id,
@@ -347,6 +369,7 @@ private:
     CUdevResource device_resource_;
     int base_sms_ = 0;
     unsigned int groups_created_ = 0;
+    unsigned int split_use_flags_ = 0;
     OneGreenContext encoder_;
     OneGreenContext decoder_;
 };
