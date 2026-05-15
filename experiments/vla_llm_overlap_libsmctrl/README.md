@@ -61,6 +61,8 @@ Set `VLA_LLM_SMCTRL_BUILD_VERBOSE=1` to show the extension build command during 
 
 Default model is `nvidia/Cosmos-Reason2-8B`. The 8B model is expected to need around 32GB before experiment buffers. If it cannot load on the local RTX A6000 setup, the script fails with a clean error; use `--model nvidia/Cosmos-Reason2-2B` for smoke tests.
 
+The default LLM decode stage uses 4 autoregressive decode steps. This intentionally makes the LLM side longer than the VLA encoder stage, so the overlap case keeps the VLA work fully covered by concurrent LLM work. Add `--llm-decode-tokens 1` when you want the old short one-token decode behavior.
+
 Example full run:
 
 ```bash
@@ -101,6 +103,7 @@ python overlap_experiment.py \
   --case llm-decode-only \
   --model nvidia/Cosmos-Reason2-2B \
   --llm-prompt-tokens 32 \
+  --llm-decode-tokens 1 \
   --iterations 1 \
   --warmup 0
 ```

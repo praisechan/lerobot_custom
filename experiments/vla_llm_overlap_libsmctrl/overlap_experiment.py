@@ -30,6 +30,8 @@ CASES = (
     "all",
 )
 
+DEFAULT_LLM_DECODE_TOKENS = 4
+
 
 @contextmanager
 def nvtx_range(name, enabled):
@@ -503,7 +505,17 @@ def main():
 
     parser.add_argument("--model", default="nvidia/Cosmos-Reason2-8B")
     parser.add_argument("--llm-prompt-tokens", type=int, default=512)
-    parser.add_argument("--llm-decode-tokens", type=int, default=1)
+    parser.add_argument(
+        "--llm-decode-tokens",
+        type=int,
+        default=DEFAULT_LLM_DECODE_TOKENS,
+        help=(
+            "Number of autoregressive decode steps per LLM decode stage. "
+            f"Default: {DEFAULT_LLM_DECODE_TOKENS}, intentionally longer than "
+            "the original one-token decode so the LLM side covers the VLA stage "
+            "during overlap profiling. Use 1 for the previous short decode."
+        ),
+    )
     parser.add_argument("--attn-implementation", default="sdpa")
     parser.add_argument("--pre-measure-sleep", type=float, default=0.0)
     args = parser.parse_args()
